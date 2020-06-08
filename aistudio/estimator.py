@@ -8,6 +8,7 @@ import numpy as np
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
 import os
+from torchvision import datasets, transforms
 # To Use Horovod
 import torch.multiprocessing as mp
 import torch.utils.data.distributed
@@ -35,7 +36,6 @@ class Estimator:
         
         if self.cuda:            
             print("CUDA Supported!")
-            print("CUDA:",hvd.rannk())
             # Horovod: initialize library.
             ##### HOROVOD #####
             hvd.init()            
@@ -64,7 +64,7 @@ class Estimator:
                 ort_session = onnxruntime.InferenceSession(self.model_path)                
             elif self.model_file_extension == '.pth' or self.model_file_extension == '.pt':
                 if self.cuda:
-                    print("PyTorch Model was Loaded:",hvd.rannk())
+                    # print("PyTorch Model was Loaded:",hvd.rannk())
                     if hvd.rank() == 0:
                         print("PyTorch Model was Loaded.")
                 else:
@@ -178,9 +178,11 @@ class Estimator:
                     else:
                         optimizer = optim.SGD(self.model.parameters(), lr=self.lr*lr_scalar,
                                               momentum=self.momentum)
+                
                 # Horovod: broadcast parameters & optimizer state.
                 hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
                 hvd.broadcast_optimizer_state(optimizer, root_rank=0)
+                
                 # Horovod: (optional) compression algorithm.
                 #compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.none
                 compression = hvd.Compression.none
@@ -201,6 +203,7 @@ class Estimator:
                     else:
                         optimizer = optim.SGD(self.model.parameters(), lr=self.lr,
                                               momentum=self.momentum)
+            
             if self.debug:
                 # Print model's state_dict
                 print("Model's state_dict:")
@@ -220,7 +223,8 @@ class Estimator:
                 # Horovod: set epoch to sampler for shuffling.
                 if self.cuda:
                     train_sampler.set_epoch(epoch)
-                for batch_idx, (data, target) in enumerate(train_loader):                    
+               
+                for batch_idx, (data, target) in enumerate(train_loader):
                     if self.cuda:
                         data, target = data.cuda(), target.cuda()                    
                     optimizer.zero_grad()
@@ -228,7 +232,7 @@ class Estimator:
                     loss = loss_func(output, target)                    
                     acc = self.accuracy(output,target)
                     loss.backward()
-                    optimizer.step()                    
+                    optimizer.step()
                     if batch_idx % self.log_interval == 0:
                         if self.cuda:
                             if hvd.rank() == 0:
@@ -238,7 +242,8 @@ class Estimator:
                         else:
                             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAccuracy: {}'.format(
                                   epoch+1, batch_idx * len(data), len(train_loader.dataset),
-                                  100. * batch_idx / len(train_loader), loss.item(), acc*100))
+                                  100. * batch_idx / len(train_loader), loss.item(), acc*100))                                  
+            
                 '''
                 self.model.eval()
                 with torch.no_grad():
