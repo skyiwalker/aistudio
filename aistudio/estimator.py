@@ -48,36 +48,38 @@ class Estimator:
             torch.set_num_threads(1)
                 
         if self.use_model:
-            self.model_filename, self.model_file_extension = os.path.splitext(self.model_path)            
-            if self.model_file_extension == '.onnx':
-                if self.cuda:
-                    if hvd.rank() == 0:
-                        print("ONNX Model was Loaded.")    
-                else:
-                    print("ONNX Model was Loaded.")
-                # Load the ONNX model
-                self.model_onnx = onnx.load(self.model_path)
-                # Check that the IR is well formed
-                onnx.checker.check_model(self.model_onnx)
-                # Print a human readable representation of the graph
-                onnx.helper.printable_graph(self.model_onnx.graph)
-                ort_session = onnxruntime.InferenceSession(self.model_path)                
-            elif self.model_file_extension == '.pth' or self.model_file_extension == '.pt':
-                if self.cuda:
-                    # print("PyTorch Model was Loaded:",hvd.rannk())
-                    if hvd.rank() == 0:
-                        print("PyTorch Model was Loaded.")
-                else:
-                    print("PyTorch Model was Loaded.")
+            if network:
                 self.model = self.network
-                # Only For Inference
-                if self.use_optimizer:
-                    # For Inference and Training
-                    checkpoint = torch.load(self.model_path)
-                    self.model.load_state_dict(checkpoint['model_state_dict'])
-                    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                else:
-                    self.model.load_state_dict(torch.load(self.model_path))
+            if self.model_path is not "":
+                self.model_filename, self.model_file_extension = os.path.splitext(self.model_path)            
+                if self.model_file_extension == '.onnx':
+                    if self.cuda:
+                        if hvd.rank() == 0:
+                            print("ONNX Model was Loaded.")    
+                    else:
+                        print("ONNX Model was Loaded.")
+                    # Load the ONNX model
+                    self.model_onnx = onnx.load(self.model_path)
+                    # Check that the IR is well formed
+                    onnx.checker.check_model(self.model_onnx)
+                    # Print a human readable representation of the graph
+                    onnx.helper.printable_graph(self.model_onnx.graph)
+                    ort_session = onnxruntime.InferenceSession(self.model_path)                
+                elif self.model_file_extension == '.pth' or self.model_file_extension == '.pt':
+                    if self.cuda:
+                        # print("PyTorch Model was Loaded:",hvd.rannk())
+                        if hvd.rank() == 0:
+                            print("PyTorch Model was Loaded.")
+                    else:
+                        print("PyTorch Model was Loaded.")                    
+                    # Only For Inference
+                    if self.use_optimizer:
+                        # For Inference and Training
+                        checkpoint = torch.load(self.model_path)
+                        self.model.load_state_dict(checkpoint['model_state_dict'])
+                        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    else:
+                        self.model.load_state_dict(torch.load(self.model_path))                        
             
             if self.cuda:
                 if self.model:
