@@ -1,6 +1,7 @@
 import subprocess
 import argparse
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 import onnx
@@ -11,7 +12,7 @@ from torch.utils.data import DataLoader
 import os
 import sys
 import pickle
-from torchvision import datasets, transforms
+from torchvision import datasets, models, transforms
 # To Use Horovod
 import torch.multiprocessing as mp
 import torch.utils.data.distributed
@@ -35,7 +36,7 @@ if __name__ == '__main__':
                         help='learning rate (default: 0.01)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                         help='SGD momentum (default: 0.5)')
-    parser.add_argument('--no-cuda', type=bool, default=False, metavar="B",
+    parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=42, metavar='S',
                         help='random seed (default: 42)')
@@ -43,8 +44,8 @@ if __name__ == '__main__':
                         help='how many batches to wait before logging training status')
 #     parser.add_argument('--fp16-allreduce', action='store_true', default=False,
 #                         help='use fp16 compression during allreduce')
-#     parser.add_argument('--use-adasum', action='store_true', default=False,
-#                         help='use adasum algorithm to do reduction')
+    parser.add_argument('--use-adasum', action='store_true', default=False,
+                        help='use adasum algorithm to do reduction')
     # dummy argument
     parser.add_argument('--nprocs', type=int, default=1, metavar='N',
                         help='number of processors(default: 1)')
@@ -52,20 +53,31 @@ if __name__ == '__main__':
                         help='loss function (default: cross entropy)')
     parser.add_argument('--optimizer', type=str, default='SGD', metavar='O',
                         help='optimizer (default: SGD)')
-    parser.add_argument('--debug', type=bool, default=False, metavar="B",
+    parser.add_argument('--debug', action='store_true', default=False,
                         help='debug mode')
     parser.add_argument('--model-path', type=str, metavar="M",
                         help='path of the model file')
+    parser.add_argument('--net-name', type=str, metavar="S",
+                        help='network module name')
+    parser.add_argument('--dataset-loader', type=str, metavar="S",
+                        help='dataset loader name')
+
     args = parser.parse_args()
+    print(args)
     if args.debug:
         print("Arguments Parsing Finished.")
     # Parsing Finished
     cuda = not args.no_cuda and torch.cuda.is_available()
     
+    if args.debug:
+        if cuda:
+            print("CUDA Supported!")
+        else:
+            print("CUDA Not Supported!")
+    
     # manual seed
     torch.manual_seed(args.seed)
-    if cuda:
-        print("CUDA Supported!")
+    if cuda:        
         # Horovod: initialize library.
         ##### HOROVOD #####
         hvd.init()        
@@ -76,21 +88,35 @@ if __name__ == '__main__':
         # Horovod: limit # of CPU threads to be used per worker.
         torch.set_num_threads(1)
     
-    # Load Input Data
     # Get path for this training script
     thispath = os.path.dirname(os.path.abspath(__file__))
-    with open(thispath+'/dataset.pkl', 'rb') as f:
-        dataset = pickle.load(f)
-    input_data_np, input_labels_np = dataset
-    input_data = torch.from_numpy(input_data_np)
-    input_labels = torch.from_numpy(input_labels_np)
-    # Check Input Data
-    if input_data is None or input_labels is None:
-        print("Input Data Not Found.")
-        sys.exit()
     
-    # Make TensorDataset and DataLoader for PyTorch
-    train_dataset = TensorDataset(input_data, input_labels)
+    # Dataset Loader
+    if args.dataset_loader is not None:
+        loader_name = args.dataset_loader
+        # net path e.g.) $HOME/workspace/ws-1/jobs/job-1/../../../datasets
+        dataset_path = os.path.join(thispath, os.pardir, os.pardir, 'datasets')        
+        sys.path.append(dataset_path)
+        # import dataset loader
+        import importlib
+        loader = importlib.import_module(loader_name)
+        dataset_loader = loader.DatasetLoader()
+        train_dataset = dataset_loader.get_train_dataset(validation=False)
+    else:    
+        # Load Input Data        
+        with open(thispath+'/dataset.pkl', 'rb') as f:
+            dataset = pickle.load(f)
+        input_data_np, input_labels_np = dataset
+        input_data = torch.from_numpy(input_data_np)
+        input_labels = torch.from_numpy(input_labels_np)
+        # Check Input Data
+        if input_data is None or input_labels is None:
+            print("Input Data Not Found.")
+            sys.exit()    
+        # Make TensorDataset and DataLoader for PyTorch
+        train_dataset = TensorDataset(input_data, input_labels)
+    
+    
     # Handling Input of Loss Function
     loss = args.loss
     loss_func = F.nll_loss
@@ -102,16 +128,34 @@ if __name__ == '__main__':
         loss_func = F.cross_entropy
     elif loss == "l1_loss":
         loss_func = F.l1_loss
+    #loss_func = nn.CrossEntropyLoss()
 
-    # set system path to load model
-    # TODO: MUST BE COMPLEMENTED
-    model_path = args.model_path
-    sys.path.append(model_path)
-    # Custom Model
-    import torchmodel
-    # set model
-    model = torchmodel.Net()
-    model.load_state_dict(torch.load(model_path+"/torchmodel.pth"))
+    # Load Model    
+    if args.model_path is not None:
+        print("Model path was found.")
+        # set system path to load model
+        model_path = args.model_path
+        sys.path.append(model_path)
+        # Custom Model
+        import torchmodel
+        # set model
+        model = torchmodel.Net()
+        model.load_state_dict(torch.load(model_path+"/torchmodel.pth"))
+    
+    # Load Network
+    if args.net_name is not None:
+        print("Network was found.")
+        # set system path to load model
+        modulename = args.net_name
+        # net path e.g.) $HOME/workspace/ws-1/jobs/job-1/../../../nets
+        netpath = os.path.join(thispath, os.pardir, os.pardir, 'nets')        
+        sys.path.append(netpath)
+        # Custom Model
+        import importlib
+        torchnet = importlib.import_module(modulename)
+        # set model
+        model = torchnet.Net()
+    
         
     if cuda:
         ##### HOROVOD #####
@@ -124,15 +168,23 @@ if __name__ == '__main__':
                 mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
             kwargs['multiprocessing_context'] = 'forkserver'
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size,
-                                                   sampler=train_sampler, **kwargs)
+                                                   sampler=train_sampler, **kwargs)        
+        
+        # Move model to GPU.
+        model.cuda()
+        
+        # By default, Adasum doesn't need scaling up learning rate.
+        lr_scalar = hvd.size() if not args.use_adasum else 1
+        
         if args.use_adasum and hvd.nccl_built():
-            lr_scaler = hvd.local_size()                
-            if opt == "SGD":
-                optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
-                                      momentum=args.momentum)
-            else:
-                optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
-                                      momentum=args.momentum)
+            lr_scalar = hvd.local_size()
+        
+        if args.optimizer == "SGD":
+            optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
+                                  momentum=args.momentum)
+        else:
+            optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
+                                  momentum=args.momentum)
 
         # Horovod: broadcast parameters & optimizer state.
         hvd.broadcast_parameters(model.state_dict(), root_rank=0)
@@ -148,8 +200,8 @@ if __name__ == '__main__':
                                              op=hvd.Average)
                                              #op=hvd.Adasum if args.use_adasum else hvd.Average)
     else:                
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
-        if optim == "SGD":
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+        if args.optimizer == "SGD":
             optimizer = optim.SGD(model.parameters(), lr=args.lr,
                                   momentum=args.momentum)
         else:
@@ -195,4 +247,8 @@ if __name__ == '__main__':
                 else:
                     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAccuracy: {}'.format(
                           epoch+1, batch_idx * len(data), len(train_loader.dataset),
-                          100. * batch_idx / len(train_loader), loss.item(), acc*100))
+                          100. * batch_idx / len(train_loader), loss.item(), acc*100))  
+                    
+    # save trained model
+    PATH = thispath + '/torchmodel.pth'
+    torch.save(model.state_dict(), PATH)
