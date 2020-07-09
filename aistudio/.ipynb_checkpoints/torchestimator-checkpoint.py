@@ -129,7 +129,7 @@ horovodrun -np {} python {} {}
                 },
                 facet_config = {
                     'loss': { 'name': 'Loss', 'limit': [None, None], 'scale': 'linear' },
-                    'acc': { 'name': 'Accuracy', 'limit': [0, 1], 'scale': 'linear' }
+                    'acc': { 'name': 'Accuracy', 'limit': [None, 1], 'scale': 'linear' }
                 },
                 xaxis_config = { 'name': 'Epoch', 'limit': [0, epochs] }
             )
