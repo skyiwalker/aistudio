@@ -25,7 +25,7 @@ class Estimator:
         args = []
         for key, value in self.script_params.items():
             args.append('--'+key) # names of arguments            
-            if key != 'debug' and key != 'no-cuda':                
+            if key != 'debug' and key != 'no-cuda' and key != 'validation':                
                 args.append(str(value))
         
         ##########################
@@ -58,7 +58,9 @@ class Estimator:
         ##########################
         # TODO: NEED JOB INDEX
         ##########################
-        JOB_INDEX = 1   
+        # Job index is a number after last job number
+        JOB_INDEX = 1
+        # Job path settings (mkdir)
         JOB_PATH = self.WORKSPACE_PATH+'/jobs/job-'+str(JOB_INDEX)+'/'
         self.JOB_PATH = JOB_PATH
         JOB_SCRIPT = JOB_PATH+'run.sh'
@@ -80,18 +82,20 @@ horovodrun -np {} python {} {}
         
     def register_model(self, model_name):
         # add model information to database(file db or web db)
-        # create model folder
-        
+        # create model folder        
+        model_path = self.WORKSPACE_PATH + '/models/' + model_name
+        if not os.path.isdir(model_path):
+            os.mkdir(model_path)
         # copy network file to model path
         # $WORKSPACE/nets/{net_name} -> $WORKSPACE/models/{model_name}/torchmodel.py
         org_net_path = self.WORKSPACE_PATH + '/nets/' + self.net_name + '.py'
-        net_path = self.MODEL_PATH + '/torchmodel.py'
+        net_path = model_path + '/torchmodel.py'
         shutil.copy(org_net_path, net_path)
         # copy model file ti model path
         # $JOB_PATH/torchmodel.pth -> $WORKSPACE/models/{model_name}/torchmodel.pth
-        org_model_path = JOB_PATH + 'torchmodel.pth'
-        model_path = self.MODEL_PATH + '/torchmodel.pth'
-        shutil.copy(org_model_path, model_path)
+        org_modelfile_path = self.JOB_PATH + 'torchmodel.pth'
+        modelfile_path = model_path + '/torchmodel.pth'
+        shutil.copy(org_modelfile_path, modelfile_path)
         
     def _request_to_portal(self):
         print("Job Requested to Portal.")
