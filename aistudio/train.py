@@ -17,6 +17,7 @@ from torchvision import datasets, models, transforms
 import torch.multiprocessing as mp
 import torch.utils.data.distributed
 import horovod.torch as hvd
+import shutil
 #from torch.utils.tensorboard import SummaryWriter
 
 def accuracy(out, yb):
@@ -36,13 +37,18 @@ def log_epoch(phase_str, epoch, num_epochs, loss, acc):
 #     writer.add_scalar('Loss/epoch', loss, epoch)
 #     writer.add_scalar('Accuracy/epoch', acc, epoch)
     if phase_str != "Prediction":
-        with open(this_path + '/epochs.log', 'a') as f:
+        with open(this_path + '/epoch.log', 'a') as f:
             f.write("{}, {}, {}, {}\n".format(phase_str, epoch+1,loss,acc))
             f.flush()
 
-def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sampler=None):    
+def metric_average(val, name):
+    tensor = torch.tensor(val)
+    avg_tensor = hvd.allreduce(tensor, name=name)
+    return avg_tensor.item()
+
+def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sampler):    
     # global variables
-    global global_iteration, this_path
+    global this_path
     
     if phase == "train":
         model.train()
@@ -58,14 +64,15 @@ def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sam
         phase_str = "Prediction"
 
     # Horovod: set epoch to sampler for shuffling.
-    if cuda:
-        sampler.set_epoch(epoch)
+    sampler.set_epoch(epoch)
     # initialize running loss and accuracy    
     running_loss = 0.0
     running_accuracy = 0.0
+    iteraion = 0
     for batch_idx, (data, target) in enumerate(dataloader):
+        index = batch_idx + 1
         if cuda:
-            data, target = data.cuda(), target.cuda()                    
+            data, target = data.cuda(), target.cuda()        
         optimizer.zero_grad()
         output = model(data)
         loss = loss_func(output, target)                    
@@ -76,38 +83,34 @@ def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sam
         # statistics
         running_loss += loss.item() * data.size(0)
         running_accuracy += acc * data.size(0)
-        if batch_idx % args.log_interval == 0:
-            if cuda:
-                if hvd.rank() == 0:                    
-                    print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAccuracy: {}'.format(
-                          phase_str, epoch+1, batch_idx * len(data), len(sampler),
-                          100. * batch_idx / len(dataloader), loss.item(), acc*100.))
-#                     writer.add_scalar('Loss/iteration', loss.item(), global_iteration)
-#                     writer.add_scalar('Accuracy/iteration', acc, global_iteration)
-                    if phase != "test":
-                        with open(this_path + '/iterations.log', 'a') as f:
-                            f.write("{}, {}, {}, {}\n".format(phase_str,global_iteration,loss.item(),acc))
-                            f.flush()
+        if index % args.log_interval == 0:            
+            if index == len(dataloader):
+                progress = len(data) + (index-1)*dataloader.batch_size
             else:
-                print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAccuracy: {}'.format(
-                      phase_str, epoch+1, batch_idx * len(data), len(dataloader.dataset),
-                      100. * batch_idx / len(dataloader), loss.item(), acc*100.))
-#                 writer.add_scalar('Loss/iteration', loss.item(), global_iteration)
-#                 writer.add_scalar('Accuracy/iteration', acc, global_iteration)
-                if phase != "test":
-                    with open(this_path + '/iterations.log', 'a') as f:
-                        f.write("{}, {}, {}, {}\n".format(phase_str,global_iteration,loss.item(),acc))
-                        f.flush()
-        global_iteration = global_iteration + 1
+                progress = index * len(data)
+            print('[Worker{}] {} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAccuracy: {}'.format(
+                  hvd.rank(),phase_str, epoch+1, progress, len(sampler),
+                  100. * index / len(dataloader), loss.item(), acc*100.))
+#                     writer.add_scalar('Loss/iteration', loss.item(), iteraion)
+#                     writer.add_scalar('Accuracy/iteration', acc, iteraion)
+            if phase != "test":
+                with open(this_path + '/iteration.log', 'a') as f:
+                    f.write("{}, {}, {}, {}\n".format(phase_str,iteraion,loss.item(),acc))
+                    f.flush()
+        iteraion = iteraion + 1
     # DataLoader Loop Ended.
-    dataset_size = len(dataloader.dataset)
-    epoch_loss = running_loss / dataset_size
-    epoch_acc = running_accuracy / dataset_size
+    
+    # Horovod: use test_sampler to determine the number of examples in
+    # this worker's partition.    
+    epoch_loss = running_loss / len(sampler)
+    epoch_acc = running_accuracy / len(sampler)
+    
+    # Horovod: average metric values across workers.
+    epoch_loss = metric_average(epoch_loss, 'avg_loss')
+    epoch_acc = metric_average(epoch_acc, 'avg_accuracy')
+    
     # print statistics for an epoch
-    if cuda:
-        if hvd.rank() == 0:
-            log_epoch(phase_str, epoch, num_epochs, epoch_loss, epoch_acc)
-    else:
+    if hvd.rank() == 0:
         log_epoch(phase_str, epoch, num_epochs, epoch_loss, epoch_acc)
     
 if __name__ == '__main__':    
@@ -153,35 +156,39 @@ if __name__ == '__main__':
     parser.add_argument('--dataset-loader', type=str, metavar="S",
                         help='dataset loader name')
 
-    args = parser.parse_args()
-    print(args)
+    args = parser.parse_args()    
+                
+    # global variables
+    global this_path
+        
+    # Horovod: initialize library.
+    hvd.init()    
+    
+    # manual seed
+    torch.manual_seed(args.seed)   
+    
     if args.debug:
-        print("Arguments Parsing Finished.")
+        if hvd.rank() == 0:
+            print("Arguments Parsing Finished.")
+            print(args)
     # Parsing Finished
     cuda = not args.no_cuda and torch.cuda.is_available()
     
     if args.debug:
         if cuda:
-            print("CUDA Supported!")
+            if hvd.rank() == 0:
+                print("CUDA Supported!")
         else:
-            print("CUDA Not Supported!")
-            
-    # global variables
-    global global_iteration, this_path
-    global_iteration = 1
+            if hvd.rank() == 0:
+                print("CUDA Not Supported!")
     
-    # manual seed
-    torch.manual_seed(args.seed)
-    if cuda:        
-        # Horovod: initialize library.
-        ##### HOROVOD #####
-        hvd.init()        
-        # Horovod: pin GPU to local rank.
-        ##### HOROVOD #####
+    if cuda:              
+        # Horovod: pin GPU to local rank.        
         torch.cuda.set_device(hvd.local_rank())            
-        torch.cuda.manual_seed(args.seed)
-        # Horovod: limit # of CPU threads to be used per worker.
-        torch.set_num_threads(1)
+        torch.cuda.manual_seed(args.seed)        
+    
+    # Horovod: limit # of CPU threads to be used per worker.
+    torch.set_num_threads(1)
     
     # Get path for this training script
     this_path = os.path.dirname(os.path.abspath(__file__))
@@ -193,8 +200,8 @@ if __name__ == '__main__':
     # Dataset Loader
     if args.dataset_loader is not None:
         loader_name = args.dataset_loader
-        # net path e.g.) $HOME/workspace/ws-1/jobs/job-1/../../../datasets
-        dataset_path = os.path.join(this_path, os.pardir, os.pardir, 'datasets')        
+        # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../../dataset
+        dataset_path = os.path.join(this_path, os.pardir, os.pardir, 'dataset')        
         sys.path.append(dataset_path)
         # import dataset loader
         import importlib
@@ -217,7 +224,8 @@ if __name__ == '__main__':
         input_labels = torch.from_numpy(input_labels_np)
         # Check Input Data
         if input_data is None or input_labels is None:
-            print("Input Data Not Found.")
+            if hvd.rank() == 0:
+                print("Input Data Not Found.")
             sys.exit()    
         # Make TensorDataset and DataLoader for PyTorch
         train_dataset = TensorDataset(input_data, input_labels)
@@ -244,7 +252,8 @@ if __name__ == '__main__':
     
     # Load Model    
     if args.model_path is not None:
-        print("Model path was found.")
+        if hvd.rank() == 0:
+            print("Model path was found.")
         # set system path to load model
         model_path = args.model_path
         sys.path.append(model_path)
@@ -255,11 +264,12 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(model_path+"/torchmodel.pth"))    
     # Load Network
     elif args.net_name is not None:
-        print("Network was found.")
+        if hvd.rank() == 0:
+            print("Network was found.")
         # set system path to load model
         modulename = args.net_name
-        # net path e.g.) $HOME/workspace/ws-1/jobs/job-1/../../../nets
-        netpath = os.path.join(this_path, os.pardir, os.pardir, 'nets')        
+        # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net
+        netpath = os.path.join(this_path, os.pardir, os.pardir, 'net')        
         sys.path.append(netpath)
         # Custom Model
         import importlib
@@ -270,118 +280,113 @@ if __name__ == '__main__':
         if prediction:
             model.load_state_dict(torch.load(this_path+"/torchmodel.pth"))
     
-        
-    if cuda:
-        ##### HOROVOD #####
-        if prediction:
-            test_sampler = torch.utils.data.distributed.DistributedSampler(
-                           test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-        else:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(
-                           train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-            if validation:
-                valid_sampler = torch.utils.data.distributed.DistributedSampler(
-                           valid_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-        kwargs = {'num_workers': 1, 'pin_memory': True}
-        # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
-        # issues with Infiniband implementations that are not fork-safe
-        if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and
-                mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
-            kwargs['multiprocessing_context'] = 'forkserver'
-            
-        if prediction:
-            test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size,
-                                                       sampler=test_sampler, **kwargs)
-        else:
-            train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size,
-                                                       sampler=train_sampler, **kwargs)
-            if validation:
-                valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=args.batch_size,
-                                                       sampler=valid_sampler, **kwargs)
-        
+
+    ##### HOROVOD #####
+    if prediction:
+        test_sampler = torch.utils.data.distributed.DistributedSampler(
+                       test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    else:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+                       train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+        if validation:
+            valid_sampler = torch.utils.data.distributed.DistributedSampler(
+                       valid_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    kwargs = {'num_workers': 1, 'pin_memory': True} if cuda else {}
+    # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
+    # issues with Infiniband implementations that are not fork-safe
+    if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and
+            mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
+        kwargs['multiprocessing_context'] = 'forkserver'
+
+    if prediction:
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size,
+                                                   sampler=test_sampler, **kwargs)
+    else:
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size,
+                                                   sampler=train_sampler, **kwargs)
+        if validation:
+            valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=args.batch_size,
+                                                   sampler=valid_sampler, **kwargs)
+
+    # By default, Adasum doesn't need scaling up learning rate.
+    lr_scalar = hvd.size() if not args.use_adasum else 1
+
+    if args.optimizer == "SGD":
+        optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
+                              momentum=args.momentum)
+    else:
+        optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
+                              momentum=args.momentum)
+
+    # Horovod: broadcast parameters & optimizer state.
+    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+    hvd.broadcast_optimizer_state(optimizer, root_rank=0)
+
+    # Horovod: (optional) compression algorithm.
+    #compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.none
+    compression = hvd.Compression.none
+    # Horovod: wrap optimizer with DistributedOptimizer.
+    optimizer = hvd.DistributedOptimizer(optimizer,
+                                         named_parameters=model.named_parameters(),
+                                         compression=compression,
+                                         op=hvd.Average)
+                                         #op=hvd.Adasum if args.use_adasum else hvd.Average)
+    
+    if cuda:        
         # Move model to GPU.
         model.cuda()
-        
-        # By default, Adasum doesn't need scaling up learning rate.
-        lr_scalar = hvd.size() if not args.use_adasum else 1
-        
+        # If using GPU Adasum allreduce, scale learning rate by local_size.
         if args.use_adasum and hvd.nccl_built():
             lr_scalar = hvd.local_size()
-        
-        if args.optimizer == "SGD":
-            optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
-                                  momentum=args.momentum)
-        else:
-            optimizer = optim.SGD(model.parameters(), lr=args.lr*lr_scalar,
-                                  momentum=args.momentum)
-
-        # Horovod: broadcast parameters & optimizer state.
-        hvd.broadcast_parameters(model.state_dict(), root_rank=0)
-        hvd.broadcast_optimizer_state(optimizer, root_rank=0)
-
-        # Horovod: (optional) compression algorithm.
-        #compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.none
-        compression = hvd.Compression.none
-        # Horovod: wrap optimizer with DistributedOptimizer.
-        optimizer = hvd.DistributedOptimizer(optimizer,
-                                             named_parameters=model.named_parameters(),
-                                             compression=compression,
-                                             op=hvd.Average)
-                                             #op=hvd.Adasum if args.use_adasum else hvd.Average)
-    else:
-        if prediction:
-            test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True)
-        else:
-            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-            if validation:
-                valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=True)
-        if args.optimizer == "SGD":
-            optimizer = optim.SGD(model.parameters(), lr=args.lr,
-                                  momentum=args.momentum)
-        else:
-            optimizer = optim.SGD(model.parameters(), lr=args.lr,
-                                  momentum=args.momentum)
-            
+          
 
     if args.debug:
         # Print model's state_dict
-        print("Model's state_dict:")
-        for param_tensor in model.state_dict():
-            print(param_tensor, "\t", model.state_dict()[param_tensor].size())
+        if hvd.rank() == 0:
+            print("Model's state_dict:")        
+            for param_tensor in model.state_dict():            
+                print(param_tensor, "\t", model.state_dict()[param_tensor].size())
 
         # Print optimizer's state_dict
-        print("Optimizer's state_dict:")
-        for var_name in optimizer.state_dict():
-            print(var_name, "\t", optimizer.state_dict()[var_name])
+        if hvd.rank() == 0:
+            print("Optimizer's state_dict:")
+            for var_name in optimizer.state_dict():
+                print(var_name, "\t", optimizer.state_dict()[var_name])
 
                 
     # Initialize Summary Writer
 #     writer_train = SummaryWriter("runs/train")
 #     writer_valid = SummaryWriter("runs/valid")
  
-    # Initialize Global Iteration
-    global_iteration = 0
     losses = []
     nums = []
     accs = []    
     num_epochs = args.epochs
+    # prediction phase need only 1 epoch
+    if prediction:
+        num_epochs = 1
     for epoch in range(num_epochs):
-        if cuda:
-            if prediction:
-                train("test",epoch,num_epochs,model,loss_func,optimizer,test_loader,test_sampler)
-            else:
-                train("train",epoch,num_epochs,model,loss_func,optimizer,train_loader,train_sampler)
-                if validation:
-                    train("valid",epoch,num_epochs,model,loss_func,optimizer,valid_loader,valid_sampler)
+        if prediction:
+            train("test",epoch,num_epochs,model,loss_func,optimizer,test_loader,test_sampler)
         else:
-            if prediction:
-                train("test",epoch,num_epochs,model,loss_func,optimizer,test_loader)
-            else:
-                train("train",epoch,num_epochs,model,loss_func,optimizer,train_loader)
-                if validation:
-                    train("valid",epoch,num_epochs,model,loss_func,optimizer,valid_loader)
+            train("train",epoch,num_epochs,model,loss_func,optimizer,train_loader,train_sampler)
+            if validation:
+                train("valid",epoch,num_epochs,model,loss_func,optimizer,valid_loader,valid_sampler)
+
           
     # save trained model
     if not prediction:
-        PATH = this_path + '/torchmodel.pth'
-        torch.save(model.state_dict(), PATH)
+        # only rank 0 does this
+        if hvd.rank() == 0:
+            PATH = this_path + '/torchmodel.pth'
+            torch.save(model.state_dict(), PATH)
+            # save network structure
+            if args.net_name is not None:
+                print("Network was found.")
+                # set system path to load model
+                modulename = args.net_name
+                # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net
+                netpath = os.path.join(this_path, os.pardir, os.pardir, 'net')
+                netfile = netpath + '/' + modulename + '.py'
+                PATH = this_path + '/torchmodel.py'
+                shutil.copy(netfile, PATH)
