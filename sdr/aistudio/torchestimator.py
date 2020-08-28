@@ -24,6 +24,7 @@ class TorchEstimator:
         self.net_name = net_name
         self.script_params = script_params
         self.init_params()
+        self.apiurl = 'https://sdr.edison.re.kr:8443'
         
     def init_params(self):
         # Handling Arguments
@@ -94,10 +95,9 @@ class TorchEstimator:
         print(JOB_PATH)
         self.job_path = JOB_PATH
         self.has_job = False
-        # 5 is after 'home/'
-        OUTPUT_PATH = EDISON_SCIDATA_PATH + JOB_PATH[5:]
-        self.output_path = OUTPUT_PATH
-        self.workspace_real_path = EDISON_SCIDATA_PATH + WORKSPACE_PATH[5:]
+        # 5 is after 'home/'        
+        self.real_output_path = EDISON_SCIDATA_PATH + JOB_PATH[5:]
+        self.real_workspace_path = EDISON_SCIDATA_PATH + WORKSPACE_PATH[5:]
         # Add Model Path
         if self.model_name is not "":
             MODEL_PATH = WORKSPACE_PATH + '/model/' + self.model_name
@@ -121,7 +121,7 @@ class TorchEstimator:
         self.job_title = 'job-' + timenow
         self.this_job_path = self.job_path + '/' + self.job_title        
         self.job_script = self.this_job_path + '/job.sh'
-        self.output_path = self.output_path + '/' +  self.job_title
+        self.output_path = self.real_output_path + '/' +  self.job_title
         if not os.path.isdir(self.this_job_path):
             os.mkdir(self.this_job_path)
         self.has_job = True
@@ -168,8 +168,8 @@ HOME={}
 JOBDIR={}
 conda activate torch
 /usr/local/bin/mpirun -np {} -x TORCH_HOME=/home/{} -x PATH -x HOROVOD_MPI_THREADS_DISABLE=1 -x NCCL_SOCKET_IFNAME=^docker0,lo -mca btl_tcp_if_exclude lo,docker0  -mca pml ob1 singularity exec --nv -H ${{HOME}}:/home/{} --nv --pwd ${{JOBDIR}} /EDISON/SCIDATA/singularity-images/userenv3 python ${{JOBDIR}}/train.py {}
-curl https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
-'''.format(self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.job_id)        
+curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
+'''.format(self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id)        
         
         # FOR LOCAL TEST
 #         shell_script='''\
@@ -377,11 +377,11 @@ curl https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/studio-upda
             argstr = argstr + ' --prediction'
             if self.has_job==False:
                 ##### Make dir for new job #####
-                self.make_job_path()
-                ##### request submit job (register job to database) - API Call #####
-                self._request_submit_job()
+                self.make_job_path()                
                 # copy train.py to job path
                 self.copy_train_script()
+            ##### request submit job (register job to database) - API Call #####
+            self._request_submit_job()
             # FOR LOCAL TEST
             with open(self.job_script,'w') as shfile:
 #                 shell_script='''\
@@ -440,15 +440,14 @@ curl https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/studio-upda
           'title': self.job_title,
           'targetType': '81', # targetType 81 is for normal ai job(train,predict)
           'workspaceName': self.workspace_name,
-          'location': self.workspace_real_path #self.workspace_path
+          'location': self.real_workspace_path #self.workspace_path
         }
         if self.debug:
             print(data)        
-        response = requests.post('https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/studio-submit-de-job', data=data)
+        response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/studio-submit-de-job', data=data)
         if response.status_code == 200:            
-            self.job_id = response.json()
-            if self.debug:
-                print(self.job_id)            
+            self.job_id = response.json()            
+            print("Job ID-{} was submitted.".format(self.job_id))
         else:
             print("A problem occured when generating the job.")
         print("Job was generated in database.")
@@ -461,26 +460,59 @@ curl https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/studio-upda
         if self.debug:
             print(data)
         print("Running Slurm script...")
-        response = requests.post('https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/slurm-de-job-run', data=data)
+        response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/slurm-de-job-run', data=data)
         # waiting for slurm job id
         time.sleep(3)
         try:
             with open(self.this_job_path+'/job.id','r') as f:
                 idstr = f.readline()
                 idstr = idstr.strip()
-            print("Job ID-{} is running.".format(idstr))
-            self.slurm_job_id = int(idstr)
+                print("Batch job ID-{} is running on the HPC.".format(idstr))
+                self.slurm_job_id = int(idstr)
+                self._request_update_status("RUNNING")
         except:
             print("The requested training job has failed.")
         
     def status(self):
-        _request_get_status()
+        self._request_get_status()
+        
+    def _request_update_status(self,status):        
+        try:
+            data = {
+              'deJobId': self.job_id,
+              'Status': status
+            }
+            response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/studio-update-status', data=data)
+            if self.debug:
+                if response.status_code == 200:
+                    print("Job status({}) has been updated.".format(status))
+        except:
+            print("Error: Slurm Job Not Found.")
+        
         
     def _request_get_status(self):
-        pass
+        print("Getting Status of Requested Job on the Portal.")
+        try:
+            data = {
+              'deJobId': self.job_id
+            }
+            response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/get-de-job-data', data=data)
+            if response.status_code == 200:
+                resjson = response.json()
+                print('--------------------------------')
+                print('Job ID: {}'.format(resjson['deJobId']))
+                print('Job Title: {}'.format(resjson['title']))
+                print('Start Date: {}'.format(resjson['startDt']))
+                print('End Date: {}'.format(resjson['endDt']))
+                print('--------------------------------')
+                print('Status: {}'.format(resjson['status']))
+            else:
+                print("Error: Getting status of the job has failed.")
+        except:
+            print("Error: Running Job Not Found.")
     
-    def stop(self):
-        _request_to_portal_stop_job()
+    def cancel(self):
+        self._request_to_portal_cancel_job()
         
     def _request_to_portal(self):
         print("Job Requested to Portal.")
@@ -502,10 +534,16 @@ curl https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/studio-upda
         # if there is no error
         return True
     
-    def _request_to_portal_stop_job(self):
-        print("Stop a Requested Job on the Portal.")
-        data = {
-          'jobId': self.slurm_job_id,
-          'screenName': self.user_id
-        }
-        response = requests.post('https://sdr.edison.re.kr:8443/api/jsonws/SDR_base-portlet.dejob/slurm-de-job-cancel', data=data)
+    def _request_to_portal_cancel_job(self):
+        print("Canceling a Requested Job on the Portal.")
+        try:
+            data = {
+              'jobId': self.slurm_job_id,
+              'screenName': self.user_id
+            }
+            response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/slurm-de-job-cancel', data=data)
+            if response.status_code == 200:
+                print("The job was successfully canceled.")
+                self._request_update_status("CANCELLED")
+        except:
+            print("Error: Slurm Job Not Found.")
