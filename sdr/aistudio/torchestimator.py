@@ -167,9 +167,17 @@ class TorchEstimator:
 HOME={}
 JOBDIR={}
 conda activate torch
-/usr/local/bin/mpirun -np {} -x TORCH_HOME=/home/{} -x PATH -x HOROVOD_MPI_THREADS_DISABLE=1 -x NCCL_SOCKET_IFNAME=^docker0,lo -mca btl_tcp_if_exclude lo,docker0  -mca pml ob1 singularity exec --nv -H ${{HOME}}:/home/{} --nv --pwd ${{JOBDIR}} /EDISON/SCIDATA/singularity-images/userenv3 python ${{JOBDIR}}/train.py {}
-curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
-'''.format(self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id)        
+/usr/local/bin/mpirun -np {} -x TORCH_HOME=/home/{} -x PATH -x HOROVOD_MPI_THREADS_DISABLE=1 -x NCCL_SOCKET_IFNAME=^docker0,lo -mca btl_tcp_if_exclude lo,docker0  -mca pml ob1 singularity exec --nv -H ${{HOME}}:/home/{} --nv --pwd ${{JOBDIR}} /EDISON/SCIDATA/singularity-images/userenv3 python ${{JOBDIR}}/train.py {} || error_code=$?
+if [ ! "${{error_code}}" = "" ]; then
+    echo ${{error_code}}
+    echo "failed" > ${{JOBDIR}}/status
+    curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=FAILED 
+else
+    echo ${{error_code}}
+    echo "finished" > ${{JOBDIR}}/status
+    curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
+fi
+'''.format(self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id, self.apiurl, self.job_id)
         
         # FOR LOCAL TEST
 #         shell_script='''\
@@ -428,7 +436,11 @@ curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d 
                 torchnet = importlib.import_module(modulename)
                 # set model
                 model = torchnet.Net()
-                model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth"))
+                if torch.cuda.is_available():
+                    model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth"))
+                else:
+                    device = torch.device('cpu')
+                    model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth",map_location=device))
                 return model
         else:
             print("Training has not been completed.")
@@ -534,7 +546,28 @@ curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d 
         # if there is no error
         return True
     
-    def _request_to_portal_cancel_job(self):
+    def _request_to_portal_cancel_job(self):        
+        try:
+            data = {
+              'deJobId': self.job_id
+            }
+            response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/get-de-job-data', data=data)
+            if response.status_code == 200:
+                resjson = response.json()
+                status = resjson['status']
+            else:
+                print("Error: Getting status of the job has failed.")
+        except:
+            print("Error: Running Job Not Found.")
+        
+        if status == "SUCCESS":
+            print("The job has already been successfully finished.")
+            return
+        
+        if status == "FAILED":
+            print("The job has already been ended.")
+            return
+        
         print("Canceling a Requested Job on the Portal.")
         try:
             data = {
