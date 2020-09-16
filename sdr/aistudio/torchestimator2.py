@@ -63,13 +63,9 @@ class TorchEstimator:
             if key != 'debug' and key != 'no-cuda' and key != 'validation':                
                 args.append(str(value))
         
-        # Initialize trained param
+        # Initialize train params
+        self.training = False
         self.trained = False
-        
-        ########## LOAD EQUIPMENT SPECS ##########
-        max_node = 4
-        num_core_cpu = 32
-        num_core_gpu = 2
         
         ########## PATH ##########
         ## Estimator's Directory #
@@ -169,10 +165,15 @@ class TorchEstimator:
             print("Error: A neural network definition was not found.")
         if not has_dloader:
             print("Error: A dataset loader definition was not found.")
-        
+            
+    def make_classes(self):
+        if self.has_job:
+            with open(self.this_job_path + '/netdataloader.py',"w") as f:
+                f.write(astunparse.unparse(self.class_object))
 
     def make_job_path(self):
         timenow = datetime.now().strftime('%Y%m%d%H%M%S')
+        self.job_num = timenow
         self.job_title = 'job-' + timenow
         self.this_job_path = self.job_path + '/' + self.job_title        
         self.job_script = self.this_job_path + '/job.sh'
@@ -181,12 +182,6 @@ class TorchEstimator:
             os.mkdir(self.this_job_path)
         self.has_job = True
         return self.this_job_path
-    
-    def make_classes(self):
-        if self.has_job:
-            with open(self.this_job_path + '/netdataloader.py',"w") as f:
-                f.write(astunparse.unparse(self.class_object))
-        
         
     def make_shell_script(self,argstr):                
         with open(self.this_path+"/eqspec.json", "r") as eqspec_json:
@@ -217,7 +212,7 @@ class TorchEstimator:
         
         shell_script='''\
 #!/bin/bash
-#SBATCH --job-name=job-1
+#SBATCH --job-name=job-{}
 #SBATCH --output={}/std.out
 #SBATCH --error={}/std.err
 #SBATCH --nodes={}
@@ -238,7 +233,7 @@ else
     echo "finished" > ${{JOBDIR}}/status
     curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
 fi
-'''.format(self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id, self.apiurl, self.job_id)
+'''.format(self.job_num, self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id, self.apiurl, self.job_id)
         
         # FOR LOCAL TEST
 #         shell_script='''\
@@ -328,24 +323,69 @@ fi
         ##### Write Meta Data JSON File #####
         self.write_metadata()
         # Request Job Submission
-        self.trained = self._request_to_portal()
+        self.training = self._request_to_portal()
         
     def register_model(self, model_name):
+        if not self.trained:
+            if os.isfile(self.this_job_path + '/torchmodel.pth'):
+                self.trained=True
         # add model information to database(file db or web db)
-        # create model folder        
-        model_path = self.workspace_path + '/model/' + model_name
-        if not os.path.isdir(model_path):
-            os.mkdir(model_path)
-        # copy network file to model path
-        # $WORKSPACE/nets{net_name} -> $WORKSPACE/model/{model_name}/torchmodel.py
-        org_net_path = self.workspace_path + '/net/' + self.net_name + '.py'
-        net_path = model_path + '/torchmodel.py'
-        shutil.copy(org_net_path, net_path)
-        # copy model file ti model path
-        # $JOB_PATH/torchmodel.pth -> $WORKSPACE/model/{model_name}/torchmodel.pth
-        org_modelfile_path = self.this_job_path + '/torchmodel.pth'
-        modelfile_path = model_path + '/torchmodel.pth'
-        shutil.copy(org_modelfile_path, modelfile_path)
+        if self.trained:
+            # create model folder        
+            model_root_path = self.workspace_path + '/model'
+            model_path = model_root_path + '/' + model_name
+            createDirectory(model_root_path)
+            createDirectory(model_path)
+            if self.net_name is not "":
+                # copy network file to model path
+                # $WORKSPACE/nets{net_name} -> $WORKSPACE/model/{model_name}/torchmodel.py
+                org_net_path = self.workspace_path + '/net/' + self.net_name + '.py'
+                net_path = model_path + '/torchmodel.py'
+                shutil.copy(org_net_path, net_path)
+            else:
+                self.extract_network()
+                org_net_path = self.this_job_path + '/net.py'
+                net_path = model_path + '/torchmodel.py'
+                shutil.copy(org_net_path, net_path)
+            # copy model file ti model path
+            # $JOB_PATH/torchmodel.pth -> $WORKSPACE/model/{model_name}/torchmodel.pth
+            org_modelfile_path = self.this_job_path + '/torchmodel.pth'
+            modelfile_path = model_path + '/torchmodel.pth'
+            shutil.copy(org_modelfile_path, modelfile_path)
+    
+    def extract_network(self):
+        if self.has_job:
+            # Open netdataloader python file by ast
+            pyfile = self.this_job_path + '/' + 'netdataloader.py'
+            has_net = False
+            # Extract Net class in the .py file and Save to 'net' Directory
+            with open(pyfile) as f:
+                ast_pyfile = ast.parse(f.read())
+                for node in ast_pyfile.body[:]:
+                    if type(node) == ast.ClassDef:
+                        if node.name == 'Net':
+                            print("A neural network definition has been found.")
+                            has_net = True
+                        else:
+                            ast_pyfile.body.remove(node)
+                    elif type(node) == ast.ImportFrom:
+                        if node.module.find('sdr')!=-1: # Remove Import of SDR Libraries
+                            ast_pyfile.body.remove(node)
+                    elif type(node) == ast.Import:            
+                        for modulename in node.names:
+                            if modulename.name.find('TorchEstimator')!=-1: # Remove Import of Torch Estimator
+                                ast_pyfile.body.remove(node)
+                    else:
+                        ast_pyfile.body.remove(node)
+                
+                if len(ast_pyfile.body)<1:
+                    raise ValueError("Cannot analyze the netdataloader file.")
+
+            if not has_net:
+                print("Error: A neural network definition was not found.")            
+            with open(self.this_job_path + '/net.py',"w") as f:
+                f.write(astunparse.unparse(ast_pyfile))
+    
         
     def monitor(self, timeout=MAX_DELAY_TIME):        
         if 'epochs' in self.script_params:
@@ -461,7 +501,7 @@ fi
         ##### Write Meta Data JSON File #####
         self.write_metadata()
         # Request Job Submission
-        self.trained = self._request_to_portal()
+        self.training = self._request_to_portal()
     
     # Report for Prediction
     def report(self):
@@ -473,6 +513,9 @@ fi
             print("Prediction has not been completed.\nPlease execute the command again after a while.")        
         
     def get_model(self):
+        if not self.trained:
+            if os.isfile(self.this_job_path + '/torchmodel.pth'):
+                self.trained=True
         # Load Network
         if self.trained:
             if self.net_name is not "":
@@ -486,13 +529,19 @@ fi
                 import importlib
                 torchnet = importlib.import_module(modulename)
                 # set model
-                model = torchnet.Net()
-                if torch.cuda.is_available():
-                    model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth"))
-                else:
-                    device = torch.device('cpu')
-                    model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth",map_location=device))
-                return model
+                model = torchnet.Net()                
+            else:                      
+                sys.path.append(self.this_job_path)
+                import importlib
+                netdataloader = importlib.import_module('netdataloader')
+                model = netdataloader.Net()
+            # Load weights of the model from .pth file
+            if torch.cuda.is_available():
+                model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth"))
+            else:
+                device = torch.device('cpu')
+                model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth",map_location=device))
+            return model
         else:
             print("Training has not been completed.")
             return None
@@ -533,6 +582,7 @@ fi
                 print("Batch job ID-{} is running on the HPC.".format(idstr))
                 self.slurm_job_id = int(idstr)
                 self._request_update_status("RUNNING")
+                self.trained = True
         except:
             print("The requested training job has failed.")
         
@@ -597,7 +647,7 @@ fi
         # if there is no error
         return True
     
-    def _request_to_portal_cancel_job(self):        
+    def _request_get_status_return(self):
         try:
             data = {
               'deJobId': self.job_id
@@ -605,12 +655,18 @@ fi
             response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/get-de-job-data', data=data)
             if response.status_code == 200:
                 resjson = response.json()
-                status = resjson['status']
+                status = resjson['status']                
+                return status
             else:
                 print("Error: Getting status of the job has failed.")
+                return "ERROR"
         except:
             print("Error: Running Job Not Found.")
+            return "ERROR"
         
+    
+    def _request_to_portal_cancel_job(self):         
+        status = self._request_get_status_return()
         if status == "SUCCESS":
             print("The job has already been successfully finished.")
             return
