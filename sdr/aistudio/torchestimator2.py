@@ -42,9 +42,11 @@ class TorchEstimator:
         nprocs = 1
         if 'nprocs' in self.script_params:
             nprocs = self.script_params['nprocs']
-        self.nprocs = nprocs        
+        self.nprocs = nprocs
         if 'debug' in self.script_params:
             self.debug = True
+        else:
+            self.debug = False
         if 'validation' in self.script_params:
             self.validation = True
         else:
@@ -595,6 +597,10 @@ fi
               'deJobId': self.job_id,
               'Status': status
             }
+            if status == "SUCCESS": # Already finished, Don't change the status
+                return
+            if status == "FAILED": # Already finished, Don't change the status
+                return
             response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/studio-update-status', data=data)
             if self.debug:
                 if response.status_code == 200:
@@ -709,10 +715,7 @@ fi
         return nbname
     
     def _save_this_nb_to_py(self,nbname,dest_dir="./"):
-        import subprocess        
-        print(os.getcwd())
-        print(os.sep)
-        print(nbname)
+        import subprocess
         filepath = os.getcwd()+os.sep+nbname        
         ipynbfilename=nbname
         try:

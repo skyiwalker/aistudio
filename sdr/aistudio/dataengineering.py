@@ -35,6 +35,8 @@ class DataEngineering:
         self.nprocs = nprocs        
         if 'debug' in self.script_params:
             self.debug = True
+        else:
+            self.debug = False
         
         # Make Arguments List
         args = []
@@ -52,7 +54,8 @@ class DataEngineering:
         self.this_path = os.path.dirname(os.path.abspath(__file__))
         ##########################
         # Get workspace path
-        ##########################                
+        ##########################
+        self.edison_sdr_path = '/EDISON/SCIDATA/sdr'
         EDISON_SCIDATA_PATH = '/EDISON/SCIDATA/sdr/draft'
         notebook_path = os.getcwd()
         if self.debug:
@@ -115,7 +118,8 @@ class DataEngineering:
                         print("A _process_result definition has been found.")
                         has_result = True
                     else:
-                        ast_pyfile.body.remove(node)
+                        pass
+#                         ast_pyfile.body.remove(node)
                 elif type(node) == ast.ImportFrom:
                     if node.module.find('sdr')!=-1: # Remove Import of SDR Libraries
                         ast_pyfile.body.remove(node)
@@ -189,7 +193,7 @@ class DataEngineering:
 
 HOME={}
 JOBDIR={}
-USER=master
+USER={}
 SINDIR=/EDISON/SCIDATA/sdr/singularity-images
 source /usr/lib64/anaconda3/etc/profile.d/conda.sh
 /usr/local/bin/mpirun -np {} -x PATH ${{SINDIR}}/DE_run ${{SINDIR}}/BatchCurate.jar ${{JOBDIR}} ${{USER}} || error_code=$?
@@ -202,7 +206,7 @@ else
     echo "finished" > ${{JOBDIR}}/status
     curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
 fi
-'''.format(self.job_num,self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.apiurl, self.job_id, self.apiurl, self.job_id)
+'''.format(self.job_num,self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.output_path, self.user_id, str(self.nprocs), self.apiurl, self.job_id, self.apiurl, self.job_id)
         
         return shell_script
     
@@ -218,7 +222,7 @@ docker.command:docker
 local.curate:docker
 dataset.remote.location:{}
 remote.curate.allowed:false
-'''.format(self.data_dir,self.real_data_dir)
+'''.format(self.edison_sdr_path,self.edison_sdr_path)
         else:
             print("Error: Data Dir")
         
@@ -250,6 +254,31 @@ remote.curate.allowed:false
             for i,directory in enumerate(self.data_dir_list):
                 directory = self.real_data_dir + '/' + directory
                 f.write("{},-1,0,{},,1,true\n".format(i,directory))
+        self.splitDataset(self.this_job_path,self.nprocs)
+    
+    def splitDataset(self,location, num):
+        rf = open(os.path.join(location, 'job.list') , 'r', encoding='utf-8' ) 
+        wfl = []
+        for idx in range(0,num) :
+            fn = os.path.join(location, 'dataset.list_%s' % idx)
+            wf = open(os.path.join(location, fn) , 'w', encoding='utf-8' ) 
+            wfl.append(wf)
+
+        idx = 0
+        while True:
+            line = rf.readline()
+            if not line:
+                break
+            wfl[idx].write(line)
+            #wfl[idx].write("/")
+
+            idx = idx + 1
+            if idx >= num :
+                idx = 0
+
+        rf.close()
+        for wf in wfl:
+            wf.close()
 
     def get_job_path(self):
         if self.has_job:
@@ -323,10 +352,7 @@ remote.curate.allowed:false
         return nbname
     
     def _save_this_nb_to_py(self,nbname,dest_dir="./"):
-        import subprocess        
-        print(os.getcwd())
-        print(os.sep)
-        print(nbname)
+        import subprocess
         filepath = os.getcwd()+os.sep+nbname        
         ipynbfilename=nbname
         try:
@@ -393,6 +419,11 @@ remote.curate.allowed:false
               'deJobId': self.job_id,
               'Status': status
             }
+            status = self._request_get_status_return()
+            if status == "SUCCESS": # Already finished, Don't change the status
+                return
+            if status == "FAILED": # Already finished, Don't change the status
+                return
             response = requests.post(self.apiurl+'/api/jsonws/SDR_base-portlet.dejob/studio-update-status', data=data)
             if self.debug:
                 if response.status_code == 200:
@@ -440,9 +471,8 @@ remote.curate.allowed:false
                 return "ERROR"
         except:
             print("Error: Running Job Not Found.")
-            return "ERROR"
-        
-    
+            return "ERROR"        
+   
     def _request_to_portal_cancel_job(self):         
         status = self._request_get_status_return()
         if status == "SUCCESS":
