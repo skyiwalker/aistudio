@@ -54,15 +54,17 @@ class TorchEstimator:
         # Make Arguments List
         args = []
         for key, value in self.script_params.items():
-            if key == "no-cuda" and value == "False":
+            if key == "no-cuda" and value == False:
                 pass
-            if key == "debug" and value == "False":
-                pass
-            if key == "validation" and value == "False":
+            elif key == "debug" and value == False:
+                self.debug = False                
+            elif key == "validation" and value == False:                
+                self.validation = False                
+            elif key == "no-evaluation" and value == False:
                 pass
             else:
                 args.append('--'+key) # names of arguments
-            if key != 'debug' and key != 'no-cuda' and key != 'validation':                
+            if key != 'debug' and key != 'no-cuda' and key != 'validation' and key != 'no-evaluation':
                 args.append(str(value))
         
         # Initialize train params
@@ -554,7 +556,7 @@ fi
           'title': self.job_title,
           'targetType': '81', # targetType 81 is for normal ai job(train,predict)
           'workspaceName': self.workspace_name,
-          'location': self.real_workspace_path #self.workspace_path
+          'location': self.output_path # real job path
         }
         if self.debug:
             print(data)        

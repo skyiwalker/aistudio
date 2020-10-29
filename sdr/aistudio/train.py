@@ -19,14 +19,55 @@ import torch.utils.data.distributed
 import horovod.torch as hvd
 import shutil
 #from torch.utils.tensorboard import SummaryWriter
+# To make Confusion matrix
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import itertools
+# To calculate score
+import sklearn.metrics as metrics
+import json
+import matplotlib
+# Force matplotlib to not use any Xwindows backend.
+matplotlib.use('Agg')
+
+### Gloabal Variables ###
+# Get path for this training script
+_JOB_PATH = os.path.dirname(os.path.abspath(__file__))
+print(_JOB_PATH)
+# net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net
+_NETWORK_PATH = os.path.join(_JOB_PATH, os.pardir, os.pardir, 'net')
+print(_NETWORK_PATH)
+# dataset path e.g.) $HOME/workspace/ws-1/job/job-1/../../dataset
+_DATASET_PATH = os.path.join(_JOB_PATH, os.pardir, os.pardir, 'dataset')
+print(_DATASET_PATH)
+
+# default problem type
+problem_type = 'classification'
+num_category = 10
 
 def accuracy(out, yb):
-    preds = torch.argmax(out, dim=1)
-    return (preds == yb).float().mean()
+    if problem_type == 'classification':
+        preds = torch.argmax(out, dim=1)
+        # Let's Make Confusion Matirx
+        stacked = torch.stack(
+            (
+                yb,
+                preds
+            )
+            ,dim=1)
+        cmt = torch.zeros(num_category,num_category, dtype=torch.int64)
+        for p in stacked:
+            tl, pl = p.tolist()
+            cmt[tl, pl] = cmt[tl, pl] + 1
+        return (preds == yb).float().mean()
+    elif problem_type == 'regression':
+        preds = 1 - abs(out-yb)/yb
+        return preds.mean()
+    else:
+        print('Unknown Problem Type!')
+        return
 
 def log_epoch(phase_str, epoch, num_epochs, loss, acc):
-    # global variables
-    global this_path
     
     print('-' * 10)
     print('Phase: {}'.format(phase_str))
@@ -37,11 +78,11 @@ def log_epoch(phase_str, epoch, num_epochs, loss, acc):
 #     writer.add_scalar('Loss/epoch', loss, epoch)
 #     writer.add_scalar('Accuracy/epoch', acc, epoch)
     if phase_str != "Prediction":
-        with open(this_path + '/epoch.log', 'a') as f:
+        with open(_JOB_PATH + '/epoch.log', 'a') as f:
             f.write("{}, {}, {}, {}\n".format(phase_str, epoch+1,loss,acc))
             f.flush()
     else:
-        with open(this_path + '/epoch_prediction.log', 'a') as f:
+        with open(_JOB_PATH + '/epoch_prediction.log', 'a') as f:
             f.write("{}, Loss: {}, Accuracy: {}\n".format(phase_str, loss,acc))
             f.flush()
 
@@ -50,10 +91,7 @@ def metric_average(val, name):
     avg_tensor = hvd.allreduce(tensor, name=name)
     return avg_tensor.item()
 
-def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sampler):    
-    # global variables
-    global this_path
-    
+def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sampler):        
     if phase == "train":
         model.train()
     else:
@@ -98,7 +136,7 @@ def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sam
 #                     writer.add_scalar('Loss/iteration', loss.item(), iteraion)
 #                     writer.add_scalar('Accuracy/iteration', acc, iteraion)
             if phase != "test":
-                with open(this_path + '/iteration.log', 'a') as f:
+                with open(_JOB_PATH + '/iteration.log', 'a') as f:
                     f.write("{}, {}, {}, {}, {}\n".format(epoch+1,phase_str,iteraion+1,loss.item(),acc))
                     f.flush()
         iteraion = iteraion + 1
@@ -116,10 +154,98 @@ def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sam
     # print statistics for an epoch
     if hvd.rank() == 0:
         log_epoch(phase_str, epoch, num_epochs, epoch_loss, epoch_acc)
-    
+
+@torch.no_grad()
+def get_all_preds(model, loader):
+    all_preds = torch.tensor([])
+    if cuda:
+        all_preds = all_preds.cuda()
+    for batch in loader:
+        data, target = batch
+        if cuda:
+            data, target = data.cuda(), target.cuda()
+        preds = model(data)
+        all_preds = torch.cat(
+            (all_preds, preds)
+            ,dim=0
+        )
+    return all_preds
+
+            
+def generate_service_config(problem_type,score):
+    service_dict = {}
+    service_dict['projectId'] = ""
+    service_dict['problemId'] = ""
+    service_dict['modelId'] = ""
+    service_dict['workspaceId'] = ""
+    service_dict['feature'] = ""
+    model_dict = {}
+    model_dict['torchmodel.pth'] = "torchmodel.pth"
+    service_dict['model'] = model_dict
+    code_dict = {}
+    code_dict['de'] = "de_run.py"
+    code_dict['ai'] = "ai_run.py"
+    service_dict['code'] = code_dict
+    service_dict['title'] = ""
+    service_dict['algorithm'] = "Pytorch Network"
+    service_dict['task'] = problem_type
+    service_dict['target'] = "target"
+    result_list = []
+    result_dict = {}
+    if problem_type == 'classification':
+        result_dict['name'] = "Mean F1 Score"
+        result_dict['value'] = score
+    elif problem_type == 'regression':
+        result_dict['name'] = "Coefficient of Determination"
+        result_dict['value'] = score
+    result_list.append(result_dict)
+    service_dict['results'] = result_list
+    service_dict['score'] = score
+    with open(_JOB_PATH + '/service.json','w') as f:
+        json.dump(service_dict,f)
+
+def calculate_score(problem_type, target, preds):
+    if problem_type == 'classification':
+        with open(_JOB_PATH + '/score', 'w') as f:
+            score = metrics.f1_score(target,preds,average='macro')
+            f.write('f1: {}'.format(score))
+    elif problem_type == 'regression':
+        with open(_JOB_PATH + '/score', 'w') as f:
+            score = metrics.r2_score(target,preds)
+            f.write('r1: {}'.format(score))
+    return score
+                
+def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        print("Normalized confusion matrix")
+    else:
+        print('Confusion matrix, without normalization')
+
+    print(cm)
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+
+    fmt = '.2f' if normalize else 'd'
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, format(cm[i, j], fmt), horizontalalignment="center", color="white" if cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')    
+    plt.savefig(_JOB_PATH + '/confusionMatrix.png')
+
+            
 if __name__ == '__main__':    
     # Arguments Parsing
     parser = argparse.ArgumentParser(description='AIStudio Training')
+    parser.add_argument('--problem-type', type=str, metavar='P',
+                        help='problem type(classification/regression)')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
@@ -157,13 +283,21 @@ if __name__ == '__main__':
                         help='path of the model file')
     parser.add_argument('--net-name', type=str, metavar="S",
                         help='network module name')
-    parser.add_argument('--dataset-loader', type=str, metavar="S",
-                        help='dataset loader name')
+    parser.add_argument('--no-evaluation', action='store_true', default=False,
+                        help='disables evaluation for entire dataset')
 
     args = parser.parse_args()    
-                
-    # global variables
-    global this_path
+    
+    # Setting Problem Type
+    if args.problem_type:
+        problem_type = args.problem_type
+    
+    if not (problem_type == 'classification' or problem_type == 'regression'):
+        print('Unknown Problem Type!')
+        sys.exit(0)
+
+    # evaluate or not for entire dataset
+    evaluation = not args.no_evaluation
         
     # Horovod: initialize library.
     hvd.init()    
@@ -194,45 +328,54 @@ if __name__ == '__main__':
     # Horovod: limit # of CPU threads to be used per worker.
     torch.set_num_threads(1)
     
-    # Get path for this training script
-    this_path = os.path.dirname(os.path.abspath(__file__))
     # validation flag from validation argument
     validation = args.validation
     # prediction flag from prediction argument
     prediction = args.prediction
     
-    # Dataset Loader
-    if args.dataset_loader is not None:
-        loader_name = args.dataset_loader
-        # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../../dataset
-        dataset_path = os.path.join(this_path, os.pardir, os.pardir, 'dataset')        
-        sys.path.append(dataset_path)
-        # import dataset loader
-        import importlib
-        loader = importlib.import_module(loader_name)
-        dataset_loader = loader.DatasetLoader()
-        if prediction:
-            test_dataset = dataset_loader.get_test_dataset()
+    # Dataset Loader    
+    # import dataset loader
+    import importlib
+    netdataloader = importlib.import_module('netdataloader')
+    dataset_loader = netdataloader.DatasetLoader(_DATASET_PATH)
+    if prediction:
+        test_dataset = dataset_loader.get_test_dataset()
+        if problem_type == 'classification':
+            if type(test_dataset) == torch.utils.data.dataset.TensorDataset:
+                num_category = test_dataset[:][1].max()
+            elif type(test_dataset) == torchvision.datasets.mnist.MNIST or \
+                type(test_dataset) == torchvision.datasets.mnist.FashionMNIST or \
+                type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
+                num_category = test_dataset.targets.max().item()
+            
+    else:
+        if validation:
+            train_dataset, valid_dataset = dataset_loader.get_train_dataset(validation=True)
         else:
-            if validation:
-                train_dataset, valid_dataset = dataset_loader.get_train_dataset(validation=True)
-            else:
-                train_dataset = dataset_loader.get_train_dataset(validation=False)
+            train_dataset = dataset_loader.get_train_dataset(validation=False)
+        # Check number of categories if the problem is classification
+        if problem_type == 'classification':
+            if type(train_dataset) == torch.utils.data.dataset.TensorDataset:
+                num_category = train_dataset[:][1].max() + 1
+            elif type(train_dataset) == torchvision.datasets.mnist.MNIST or \
+                type(train_dataset) == torchvision.datasets.mnist.FashionMNIST or \
+                type(train_dataset) == torchvision.datasets.cifar.CIFAR10:
+                num_category = train_dataset.targets.max().item() + 1
         
-    else:    
-        # Load Input Data        
-        with open(this_path+'/dataset.pkl', 'rb') as f:
-            dataset = pickle.load(f)
-        input_data_np, input_labels_np = dataset
-        input_data = torch.from_numpy(input_data_np)
-        input_labels = torch.from_numpy(input_labels_np)
-        # Check Input Data
-        if input_data is None or input_labels is None:
-            if hvd.rank() == 0:
-                print("Input Data Not Found.")
-            sys.exit()    
-        # Make TensorDataset and DataLoader for PyTorch
-        train_dataset = TensorDataset(input_data, input_labels)
+#     else:
+#         # Load Input Data        
+#         with open(_JOB_PATH+'/dataset.pkl', 'rb') as f:
+#             dataset = pickle.load(f)
+#         input_data_np, input_labels_np = dataset
+#         input_data = torch.from_numpy(input_data_np)
+#         input_labels = torch.from_numpy(input_labels_np)
+#         # Check Input Data
+#         if input_data is None or input_labels is None:
+#             if hvd.rank() == 0:
+#                 print("Input Data Not Found.")
+#             sys.exit()    
+#         # Make TensorDataset and DataLoader for PyTorch
+#         train_dataset = TensorDataset(input_data, input_labels)
     
     
     # Handling Input of Loss Function
@@ -271,10 +414,8 @@ if __name__ == '__main__':
         if hvd.rank() == 0:
             print("Network was found.")
         # set system path to load model
-        modulename = args.net_name
-        # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net
-        netpath = os.path.join(this_path, os.pardir, os.pardir, 'net')        
-        sys.path.append(netpath)
+        modulename = args.net_name    
+        sys.path.append(_NETWORK_PATH)
         # Custom Model
         import importlib
         torchnet = importlib.import_module(modulename)
@@ -282,7 +423,14 @@ if __name__ == '__main__':
         model = torchnet.Net()
         # load model to predict
         if prediction:
-            model.load_state_dict(torch.load(this_path+"/torchmodel.pth"))
+            model.load_state_dict(torch.load(_JOB_PATH+"/torchmodel.pth"))
+    elif args.net_name is None:
+        # set model
+        model = netdataloader.Net()
+        # load model to predict
+        if prediction:
+            model.load_state_dict(torch.load(_JOB_PATH+"/torchmodel.pth"))
+        
     
 
     ##### HOROVOD #####
@@ -362,9 +510,6 @@ if __name__ == '__main__':
 #     writer_train = SummaryWriter("runs/train")
 #     writer_valid = SummaryWriter("runs/valid")
  
-    losses = []
-    nums = []
-    accs = []    
     num_epochs = args.epochs
     # prediction phase need only 1 epoch
     if prediction:
@@ -376,21 +521,88 @@ if __name__ == '__main__':
             train("train",epoch,num_epochs,model,loss_func,optimizer,train_loader,train_sampler)
             if validation:
                 train("valid",epoch,num_epochs,model,loss_func,optimizer,valid_loader,valid_sampler)
-
           
     # save trained model
     if not prediction:
         # only rank 0 does this
         if hvd.rank() == 0:
-            PATH = this_path + '/torchmodel.pth'
+            PATH = _JOB_PATH + '/torchmodel.pth'
             torch.save(model.state_dict(), PATH)
             # save network structure
             if args.net_name is not None:
                 print("Network was found.")
                 # set system path to load model
                 modulename = args.net_name
-                # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net
-                netpath = os.path.join(this_path, os.pardir, os.pardir, 'net')
-                netfile = netpath + '/' + modulename + '.py'
-                PATH = this_path + '/torchmodel.py'
+                # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net                
+                netfile = _NETWORK_PATH + '/' + modulename + '.py'
+                PATH = _JOB_PATH + '/torchmodel.py'
                 shutil.copy(netfile, PATH)
+                    
+    # Evaluation for entire dataset
+    if evaluation:        
+        if prediction:
+            eval_loader = torch.utils.data.DataLoader(test_dataset, batch_size=10000)
+            preds = get_all_preds(model, eval_loader)
+            if cuda:
+                preds = preds.cpu()
+            if type(test_dataset) == torch.utils.data.dataset.TensorDataset:
+                if args.debug:
+                    print("Format of the dataset is TensorDataset!")
+                targets = test_dataset[:][1]
+                classes = test_dataset[:][1].unique().numpy()
+            elif type(test_dataset) == torchvision.datasets.mnist.MNIST or \
+                type(test_dataset) == torchvision.datasets.mnist.FashionMNIST or \
+                type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
+                if args.debug:
+                    print("Format of the dataset is torchvision dataset!")
+                targets = test_dataset.targets
+                classes = test_dataset.classes
+            if problem_type == 'classification':
+                cm = confusion_matrix(targets, preds.argmax(dim=1))
+                # plot confusion matrix
+                plot_confusion_matrix(cm, classes)
+                # calculate score
+                score = calculate_score('classification',targets,preds.argmax(dim=1))
+            elif problem_type == 'regression':
+                vsplot, ax = plt.subplots(1, 1, figsize=(12,12))
+                ax.scatter(x = preds, y = test_dataset.targets, color='c', edgecolors=(0, 0, 0))
+                ax.plot([targets.min(), targets.max()], [targets.min(), targets.max()], 'k--', lw=4)
+                ax.set_xlabel('Predicted')
+                ax.set_ylabel('Actual')
+                plt.show()
+                plt.savefig(_JOB_PATH + '/regressionAccuracy.png')
+                # calculate score
+                score = calculate_score('regression',targets,preds)
+            # generate service.json
+            generate_service_config(problem_type,score)
+        else:
+            eval_loader = torch.utils.data.DataLoader(train_dataset, batch_size=10000)
+            train_preds = get_all_preds(model, eval_loader)
+            if cuda:
+                train_preds = train_preds.cpu()
+            if type(train_dataset) == torch.utils.data.dataset.TensorDataset:
+                targets = train_dataset[:][1]
+                classes = train_dataset[:][1].unique().numpy()
+            elif type(train_dataset) == torchvision.datasets.mnist.MNIST or \
+                type(train_dataset) == torchvision.datasets.mnist.FashionMNIST or \
+                type(train_dataset) == torchvision.datasets.cifar.CIFAR10:
+                targets = train_dataset.targets
+                classes = train_dataset.classes
+            if problem_type == 'classification':
+                cm = confusion_matrix(targets, train_preds.argmax(dim=1))
+                # plot confusion matrix
+                plot_confusion_matrix(cm, classes)
+                # calculate score
+                score = calculate_score('classification',targets,train_preds.argmax(dim=1))
+            elif problem_type == 'regression':
+                vsplot, ax = plt.subplots(1, 1, figsize=(12,12))
+                ax.scatter(x = train_preds, y = targets, color='c', edgecolors=(0, 0, 0))
+                ax.plot([targets.min(), targets.max()], [targets.min(), targets.max()], 'k--', lw=4)
+                ax.set_xlabel('Predicted')
+                ax.set_ylabel('Actual')
+                plt.show()
+                plt.savefig(_JOB_PATH + '/regressionAccuracy.png')
+                # calculate score
+                score = calculate_score('regression',targets,train_preds)
+            # generate service.json
+            generate_service_config(problem_type,score)
