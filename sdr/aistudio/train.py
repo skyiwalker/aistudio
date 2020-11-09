@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 import os
 import sys
 import pickle
-from torchvision import datasets, models, transforms
+import torchvision
 # To Use Horovod
 import torch.multiprocessing as mp
 import torch.utils.data.distributed
@@ -33,13 +33,10 @@ matplotlib.use('Agg')
 ### Gloabal Variables ###
 # Get path for this training script
 _JOB_PATH = os.path.dirname(os.path.abspath(__file__))
-print(_JOB_PATH)
 # net path e.g.) $HOME/workspace/ws-1/job/job-1/../../net
 _NETWORK_PATH = os.path.join(_JOB_PATH, os.pardir, os.pardir, 'net')
-print(_NETWORK_PATH)
 # dataset path e.g.) $HOME/workspace/ws-1/job/job-1/../../dataset
 _DATASET_PATH = os.path.join(_JOB_PATH, os.pardir, os.pardir, 'dataset')
-print(_DATASET_PATH)
 
 # default problem type
 problem_type = 'classification'
@@ -136,7 +133,7 @@ def train(phase, epoch, num_epochs, model, loss_func, optimizer, dataloader, sam
 #                     writer.add_scalar('Loss/iteration', loss.item(), iteraion)
 #                     writer.add_scalar('Accuracy/iteration', acc, iteraion)
             if phase != "test":
-                with open(_JOB_PATH + '/iteration.log', 'a') as f:
+                with open(_JOB_PATH + '/iteration' + '-' + str(hvd.rank()) + '.log', 'a') as f:
                     f.write("{}, {}, {}, {}, {}\n".format(epoch+1,phase_str,iteraion+1,loss.item(),acc))
                     f.flush()
         iteraion = iteraion + 1

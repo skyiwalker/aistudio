@@ -24,6 +24,7 @@ def createDirectory(dir):
     try:
         if not os.path.exists(dir):
             os.makedirs(dir)
+            os.chmod(dir, 0o777)
     except OSError:
         print("Error: Failed to create the directory")
 
@@ -66,6 +67,10 @@ class TorchEstimator:
                 args.append('--'+key) # names of arguments
             if key != 'debug' and key != 'no-cuda' and key != 'validation' and key != 'no-evaluation':
                 args.append(str(value))
+                
+        # Problem Type
+        if 'problem-type' in self.script_params:
+            self.problem_type = self.script_params['problem-type']
         
         # Initialize train params
         self.training = False
@@ -182,8 +187,9 @@ class TorchEstimator:
         self.this_job_path = self.job_path + '/' + self.job_title        
         self.job_script = self.this_job_path + '/job.sh'
         self.output_path = self.real_output_path + '/' +  self.job_title
-        if not os.path.isdir(self.this_job_path):
-            os.mkdir(self.this_job_path)
+#         if not os.path.isdir(self.this_job_path):
+#             os.mkdir(self.this_job_path)
+        createDirectory(self.this_job_path)
         self.has_job = True
         return self.this_job_path
         
@@ -351,11 +357,31 @@ fi
                 org_net_path = self.this_job_path + '/net.py'
                 net_path = model_path + '/torchmodel.py'
                 shutil.copy(org_net_path, net_path)
-            # copy model file ti model path
+            # copy model file to model path
             # $JOB_PATH/torchmodel.pth -> $WORKSPACE/model/{model_name}/torchmodel.pth
             org_modelfile_path = self.this_job_path + '/torchmodel.pth'
             modelfile_path = model_path + '/torchmodel.pth'
             shutil.copy(org_modelfile_path, modelfile_path)
+            # copy service.json to model path            
+            org_service_file_path = self.this_job_path + '/service.json'
+            service_file_path = model_path + '/service.json'
+            if os.path.exists(org_service_file_path):
+                shutil.copy(org_service_file_path, service_file_path)
+            # copy result graph to model path
+            if self.problem_type == "classification":
+                org_graph_file_path = self.this_job_path + '/confusionMatrix.png'
+                graph_file_path = model_path + '/confusionMatrix.png'
+            if self.problem_type == "regression":
+                org_graph_file_path = self.this_job_path + '/regressionAccuracy.png'
+                graph_file_path = model_path + '/regressionAccuracy.png'
+            if os.path.exists(org_graph_file_path):
+                shutil.copy(org_graph_file_path, graph_file_path)
+            # copy score to model path
+            org_score_path = self.this_job_path + '/score'
+            score_path = model_path + '/score'
+            if os.path.exists(org_score_path):
+                shutil.copy(org_score_path, score_path)
+            
     
     def extract_network(self):
         if self.has_job:
