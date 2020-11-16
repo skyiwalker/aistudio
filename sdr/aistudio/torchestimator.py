@@ -1,3 +1,27 @@
+'''
+MIT License
+
+Copyright (c) [2020] [Seokkeun Yi]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+'''
+
 import subprocess
 import sys
 import os
@@ -136,6 +160,7 @@ class TorchEstimator:
         
     def init_classes(self):
         self.class_object = None
+        self.net_object = []
         temp_dir = './.temp'
         createDirectory(temp_dir)
         nbfilename = self._get_nbname()
@@ -143,7 +168,7 @@ class TorchEstimator:
         self._save_this_nb_to_py(nbfilename,dest_dir=temp_dir)
         pyfile = temp_dir + '/' + nbname + '.py'
         has_net = False
-        has_dloader = False
+        has_dloader = False        
         with open(pyfile) as f:
             ast_pyfile = ast.parse(f.read())
             for node in ast_pyfile.body[:]:
@@ -151,6 +176,7 @@ class TorchEstimator:
                     if node.name == 'Net':
                         print("A neural network definition has been found.")
                         has_net = True
+                        self.net_object.append(node)
                     elif node.name == 'DatasetLoader':
                         print("A dataset loader definition has been found.")
                         has_dloader = True
@@ -159,10 +185,14 @@ class TorchEstimator:
                 elif type(node) == ast.ImportFrom:
                     if node.module.find('sdr')!=-1: # Remove Import of SDR Libraries
                         ast_pyfile.body.remove(node)
+                    elif not has_net:
+                        self.net_object.append(node)
                 elif type(node) == ast.Import:            
                     for modulename in node.names:
                         if modulename.name.find('TorchEstimator')!=-1: # Remove Import of Torch Estimator
                             ast_pyfile.body.remove(node)
+                        elif not has_net:
+                            self.net_object.append(node)
                 elif type(node) != ast.FunctionDef:
                     ast_pyfile.body.remove(node)
 
@@ -171,14 +201,18 @@ class TorchEstimator:
         
         self.class_object = ast_pyfile
         if not has_net:
-            print("Error: A neural network definition was not found.")
+            print("Warning: A neural network definition was not found.")
         if not has_dloader:
-            print("Error: A dataset loader definition was not found.")
+            print("Warning: A dataset loader definition was not found.")
             
     def make_classes(self):
         if self.has_job:
+            # Network and Dataloader
             with open(self.this_job_path + '/netdataloader.py',"w") as f:
                 f.write(astunparse.unparse(self.class_object))
+            # Network only
+            with open(self.this_job_path + '/torchmodel.py',"w") as f:
+                f.write(astunparse.unparse(self.net_object))
 
     def make_job_path(self):
         timenow = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -233,7 +267,7 @@ class TorchEstimator:
 HOME={}
 JOBDIR={}
 conda activate torch
-/usr/local/bin/mpirun -np {} -x TORCH_HOME=/home/{} -x PATH -x HOROVOD_MPI_THREADS_DISABLE=1 -x NCCL_SOCKET_IFNAME=^docker0,lo -mca btl_tcp_if_exclude lo,docker0  -mca pml ob1 singularity exec --nv -H ${{HOME}}:/home/{} --nv --pwd ${{JOBDIR}} /EDISON/SCIDATA/singularity-images/userenv3 python ${{JOBDIR}}/train2.py {} || error_code=$?
+/usr/local/bin/mpirun -np {} -x TORCH_HOME=/home/{} -x PATH -x HOROVOD_MPI_THREADS_DISABLE=1 -x NCCL_SOCKET_IFNAME=^docker0,lo -mca btl_tcp_if_exclude lo,docker0  -mca pml ob1 singularity exec --nv -H ${{HOME}}:/home/{} --nv --pwd ${{JOBDIR}} /EDISON/SCIDATA/singularity-images/userenv3 python ${{JOBDIR}}/train.py {} || error_code=$?
 if [ ! "${{error_code}}" = "" ]; then
     echo ${{error_code}}
     echo "failed" > ${{JOBDIR}}/status
@@ -301,8 +335,8 @@ fi
     def copy_train_script(self):
         if self.has_job:
             # copy train.py to job path
-            org_train_script_path = self.this_path + '/train2.py'
-            train_script_path = self.this_job_path + '/train2.py'
+            org_train_script_path = self.this_path + '/train.py'
+            train_script_path = self.this_job_path + '/train.py'
             shutil.copy(org_train_script_path, train_script_path)
     
     def fit(self,input_data=None,input_labels=None):
@@ -353,8 +387,7 @@ fi
                 net_path = model_path + '/torchmodel.py'
                 shutil.copy(org_net_path, net_path)
             else:
-                self.extract_network()
-                org_net_path = self.this_job_path + '/net.py'
+                org_net_path = self.this_job_path + '/torchmodel.py'
                 net_path = model_path + '/torchmodel.py'
                 shutil.copy(org_net_path, net_path)
             # copy model file to model path
@@ -383,38 +416,38 @@ fi
                 shutil.copy(org_score_path, score_path)
             
     
-    def extract_network(self):
-        if self.has_job:
-            # Open netdataloader python file by ast
-            pyfile = self.this_job_path + '/' + 'netdataloader.py'
-            has_net = False
-            # Extract Net class in the .py file and Save to 'net' Directory
-            with open(pyfile) as f:
-                ast_pyfile = ast.parse(f.read())
-                for node in ast_pyfile.body[:]:
-                    if type(node) == ast.ClassDef:
-                        if node.name == 'Net':
-                            print("A neural network definition has been found.")
-                            has_net = True
-                        else:
-                            ast_pyfile.body.remove(node)
-                    elif type(node) == ast.ImportFrom:
-                        if node.module.find('sdr')!=-1: # Remove Import of SDR Libraries
-                            ast_pyfile.body.remove(node)
-                    elif type(node) == ast.Import:            
-                        for modulename in node.names:
-                            if modulename.name.find('TorchEstimator')!=-1: # Remove Import of Torch Estimator
-                                ast_pyfile.body.remove(node)
-                    else:
-                        ast_pyfile.body.remove(node)
+#     def extract_network(self):
+#         if self.has_job:
+#             # Open netdataloader python file by ast
+#             pyfile = self.this_job_path + '/' + 'netdataloader.py'
+#             has_net = False
+#             # Extract Net class in the .py file and Save to 'net' Directory
+#             with open(pyfile) as f:
+#                 ast_pyfile = ast.parse(f.read())
+#                 for node in ast_pyfile.body[:]:
+#                     if type(node) == ast.ClassDef:
+#                         if node.name == 'Net':
+#                             print("A neural network definition has been found.")
+#                             has_net = True
+#                         else:
+#                             ast_pyfile.body.remove(node)
+#                     elif type(node) == ast.ImportFrom:
+#                         if node.module.find('sdr')!=-1: # Remove Import of SDR Libraries
+#                             ast_pyfile.body.remove(node)
+#                     elif type(node) == ast.Import:            
+#                         for modulename in node.names:
+#                             if modulename.name.find('TorchEstimator')!=-1: # Remove Import of Torch Estimator
+#                                 ast_pyfile.body.remove(node)
+#                     else:
+#                         ast_pyfile.body.remove(node)
                 
-                if len(ast_pyfile.body)<1:
-                    raise ValueError("Cannot analyze the netdataloader file.")
+#                 if len(ast_pyfile.body)<1:
+#                     raise ValueError("Cannot analyze the netdataloader file.")
 
-            if not has_net:
-                print("Error: A neural network definition was not found.")            
-            with open(self.this_job_path + '/net.py',"w") as f:
-                f.write(astunparse.unparse(ast_pyfile))
+#             if not has_net:
+#                 print("Error: A neural network definition was not found.")            
+#             with open(self.this_job_path + '/net.py',"w") as f:
+#                 f.write(astunparse.unparse(ast_pyfile))
     
         
     def monitor(self, timeout=MAX_DELAY_TIME):        
@@ -575,6 +608,33 @@ fi
         else:
             print("Training has not been completed.")
             return None
+    
+    def submit(self,script_path):
+        # make arguments list to one string
+        argstr = ' '.join(self.args)        
+        ##### Make dir for new job #####
+        self.make_job_path()
+        ##### request submit job (register job to database) - API Call #####
+        self._request_submit_job()
+        # copy training script to job path
+        if self.has_job:
+            # copy training script as train.py to job path            
+            train_script_path = self.this_job_path + '/train.py'
+            shutil.copy(script_path, train_script_path)
+        # Writing Training Script        
+        with open(self.job_script,'w') as shfile:
+            ##### Make Shell Script #####
+            shell_script=self.make_shell_script("")
+            if shell_script == "ERROR":
+                # Failed to Predict
+                return
+            shfile.write(shell_script)
+        # Set permission to run the script
+        os.chmod(self.job_script, 0o777)
+        ##### Write Meta Data JSON File #####
+#         self.write_metadata()
+        # Request Job Submission
+        self.training = self._request_to_portal()
     
     def _request_submit_job(self):
         data = {

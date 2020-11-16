@@ -16,6 +16,7 @@ def createDirectory(dir):
     try:
         if not os.path.exists(dir):
             os.makedirs(dir)
+            os.chmod(dir, 0o777)
     except OSError:
         print("Error: Failed to create the directory")
 
@@ -153,8 +154,9 @@ class DataEngineering:
         self.job_list = self.this_job_path + '/job.list'
         self.batch_info = self.this_job_path + '/batch.info'
         self.output_path = self.real_output_path + '/' +  self.job_title
-        if not os.path.isdir(self.this_job_path):
-            os.mkdir(self.this_job_path)
+#         if not os.path.isdir(self.this_job_path):
+#             os.mkdir(self.this_job_path)
+        createDirectory(self.this_job_path)
         self.has_job = True
         return self.this_job_path       
         
@@ -369,7 +371,7 @@ remote.curate.allowed:false
           'title': self.job_title,
           'targetType': '83', # targetType 83 is for de job
           'workspaceName': self.workspace_name,
-          'location': self.real_workspace_path #self.workspace_path
+          'location': self.output_path # real job path
         }
         if self.debug:
             print(data)        
