@@ -185,7 +185,10 @@ def generate_service_config(problem_type,score):
     service_dict['code'] = code_dict
     service_dict['title'] = ""
     service_dict['algorithm'] = "Pytorch Network"
-    service_dict['task'] = problem_type
+    if problem_type == 'classification':
+        service_dict['task'] = "Classification"
+    elif problem_type == 'regression':
+        service_dict['task'] = "Regression"
     service_dict['target'] = "target"
     result_list = []
     result_dict = {}
