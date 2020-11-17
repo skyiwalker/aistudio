@@ -186,9 +186,9 @@ def generate_service_config(problem_type,score):
     service_dict['title'] = ""
     service_dict['algorithm'] = "Pytorch Network"
     if problem_type == 'classification':
-        service_dict['task'] = "Classification"
+        service_dict['task'] = "Classification" # for capital letter for the first word
     elif problem_type == 'regression':
-        service_dict['task'] = "Regression"
+        service_dict['task'] = "Regression" # for capital letter for the first word
     service_dict['target'] = "target"
     result_list = []
     result_dict = {}
@@ -344,9 +344,10 @@ if __name__ == '__main__':
             if type(test_dataset) == torch.utils.data.dataset.TensorDataset:
                 num_category = test_dataset[:][1].max()
             elif type(test_dataset) == torchvision.datasets.mnist.MNIST or \
-                type(test_dataset) == torchvision.datasets.mnist.FashionMNIST or \
-                type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
+                type(test_dataset) == torchvision.datasets.mnist.FashionMNIST:                
                 num_category = test_dataset.targets.max().item()
+            elif type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
+                num_category = max(train_dataset.targets) + 1
             
     else:
         if validation:
@@ -358,9 +359,10 @@ if __name__ == '__main__':
             if type(train_dataset) == torch.utils.data.dataset.TensorDataset:
                 num_category = train_dataset[:][1].max() + 1
             elif type(train_dataset) == torchvision.datasets.mnist.MNIST or \
-                type(train_dataset) == torchvision.datasets.mnist.FashionMNIST or \
-                type(train_dataset) == torchvision.datasets.cifar.CIFAR10:
+                type(train_dataset) == torchvision.datasets.mnist.FashionMNIST:                
                 num_category = train_dataset.targets.max().item() + 1
+            elif type(train_dataset) == torchvision.datasets.cifar.CIFAR10:
+                num_category = max(train_dataset.targets) + 1
         
 #     else:
 #         # Load Input Data        
