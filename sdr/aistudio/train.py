@@ -180,8 +180,9 @@ def generate_service_config(problem_type,score):
     model_dict['torchmodel.pth'] = "torchmodel.pth"
     service_dict['model'] = model_dict
     code_dict = {}
-    code_dict['de'] = "de_run.py"
-    code_dict['ai'] = "ai_run.py"
+    code_dict['de'] = ""
+    code_dict['ai'] = ""
+    code_dict['net'] = "torchmodel.py"
     service_dict['code'] = code_dict
     service_dict['title'] = ""
     service_dict['algorithm'] = "Pytorch Network"
