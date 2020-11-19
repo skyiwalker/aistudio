@@ -197,7 +197,8 @@ class TorchEstimator:
                     ast_pyfile.body.remove(node)
 
             if len(ast_pyfile.body)<1:
-                raise ValueError("Cannot analyze the notebook file.")
+                print("Warning: Cannot analyze the notebook file.")
+#                 raise ValueError("Cannot analyze the notebook file.")
         
         self.class_object = ast_pyfile
         if not has_net:
