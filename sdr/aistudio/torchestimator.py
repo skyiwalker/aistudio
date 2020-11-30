@@ -218,10 +218,12 @@ class TorchEstimator:
     def make_job_path(self):
         timenow = datetime.now().strftime('%Y%m%d%H%M%S')
         self.job_num = timenow
-        self.job_title = 'job-' + timenow
-        self.this_job_path = self.job_path + '/' + self.job_title        
+        self.job_location = 'job-' + timenow
+        if self.job_title == "":
+            self.job_title = self.job_location
+        self.this_job_path = self.job_path + '/' + self.job_location        
         self.job_script = self.this_job_path + '/job.sh'
-        self.output_path = self.real_output_path + '/' +  self.job_title
+        self.output_path = self.real_output_path + '/' +  self.job_location
 #         if not os.path.isdir(self.this_job_path):
 #             os.mkdir(self.this_job_path)
         createDirectory(self.this_job_path)
@@ -238,22 +240,39 @@ class TorchEstimator:
         #calculate max procs
         max_procs_cpu = num_cores_cpu * max_nodes
         max_procs_gpu = num_cores_gpu * max_nodes
-                
+        
         if 'no-cuda' in self.script_params:
             # use cpu
-            if self.nprocs > max_procs_cpu:
-                print("The maximum number of cores has been exceeded.")
-                return "ERROR"
+            if self.script_params['no-cuda']==True:
+                ntasks_per_node = num_cores_cpu
+                if self.nprocs > max_procs_cpu:
+                    print("The maximum number of cores(CPU) has been exceeded.")
+                    return "ERROR"
+            else:
+                # use gpu
+                ntasks_per_node = num_cores_gpu
+                if self.nprocs > max_procs_gpu:
+                    print("The maximum number of cores(GPU) has been exceeded.")
+                    return "ERROR"  
         else:
             # use gpu
+            ntasks_per_node = num_cores_gpu
             if self.nprocs > max_procs_gpu:
-                print("The maximum number of cores has been exceeded.")
+                print("The maximum number of cores(GPU) has been exceeded.")
                 return "ERROR"
+            
         
-        # calculate ntasks and nnodes
+        # set ntasks per node
         ntasks = self.nprocs
-        nnodes = min(max_nodes,ntasks)
-        ntasks_per_node = math.ceil(ntasks/nnodes)
+        if ntasks == 1:
+            ntasks_per_node = 1        
+        elif ntasks <= 0:
+            print("A problem was found with the parallel parameters.")
+            return "ERROR"
+        
+        # calculate and nnodes        
+        nnodes = math.ceil(ntasks/ntasks_per_node)
+        self.nnodes = nnodes
         
         shell_script='''\
 #!/bin/bash
@@ -267,6 +286,7 @@ class TorchEstimator:
 
 HOME={}
 JOBDIR={}
+curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=RUNNING 
 conda activate torch
 /usr/local/bin/mpirun -np {} -x TORCH_HOME=/home/{} -x PATH -x HOROVOD_MPI_THREADS_DISABLE=1 -x NCCL_SOCKET_IFNAME=^docker0,lo -mca btl_tcp_if_exclude lo,docker0  -mca pml ob1 singularity exec --nv -H ${{HOME}}:/home/{} --nv --pwd ${{JOBDIR}} /EDISON/SCIDATA/singularity-images/userenv3 python ${{JOBDIR}}/train.py {} || error_code=$?
 if [ ! "${{error_code}}" = "" ]; then
@@ -278,7 +298,7 @@ else
     echo "finished" > ${{JOBDIR}}/status
     curl {}/api/jsonws/SDR_base-portlet.dejob/studio-update-status -d deJobId={} -d Status=SUCCESS 
 fi
-'''.format(self.job_num, self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id, self.apiurl, self.job_id)
+'''.format(self.job_num, self.output_path, self.output_path, nnodes, ntasks, ntasks_per_node, self.home_path, self.this_job_path, self.apiurl, self.job_id, str(self.nprocs), self.user_id, self.user_id, argstr, self.apiurl, self.job_id, self.apiurl, self.job_id)
         
         # FOR LOCAL TEST
 #         shell_script='''\
@@ -293,42 +313,70 @@ fi
             return self.this_job_path
         else:
             print("A working job directory has not been created yet.")
-            
-    def write_metadata(self):
-        # Example of script_params
-        '''
-        script_params = {
-            'epochs':5,
-            'batch-size':64,
-            'test-batch-size':128,
-            'lr':0.01,
-            'momentum':0.5,
-            'seed':42,
-            'log-interval':10,
-            #'no-cuda':False,
-            'nprocs':1,
-            'loss':'cross_entropy',
-            #'loss':'nll_loss',
-            'optimizer':'SGD',
-            'validation': True,
-            'debug': True
-        }
-        '''
-                
-        metadata = {}
-        metadata['hyperparameters'] = {}
-        metadata['otherparameters'] = {}
-        metadata['others'] = {}
+
+    # job_type = 1 : AI Training by Template, 2 : Normal Script
+    def write_metadata(self,job_type=1):
         
-        for key, value in self.script_params.items():
-            if key == "epochs" or key == "batch-size" or key =="test-batch-size" or \
-                key == "lr" or key == "momentum" or key == "loss" or key == "optimizer":
-                metadata['hyperparameters'][key] = value
-            elif key == "seed" or key =="log-interval" or key =="nprocs" or key =="validation" or \
-                key =="debug" or key =="net-name" or key =="no-cuda":
-                metadata['otherparameters'][key] = value
-            else:
-                metadata['others'][key] = value
+        metadata = {}
+        metadata['job-type'] = job_type
+        metadata['information'] = {}
+        # default processor type
+        metadata['information']['proc_type'] = "GPU"
+        # additional meta data
+        metadata['information']['nnodes'] = self.nnodes
+        
+        if job_type == 1:
+            # Example of script_params
+            '''
+            script_params = {
+                'epochs':5,
+                'batch-size':64,
+                'test-batch-size':128,
+                'lr':0.01,
+                'momentum':0.5,
+                'seed':42,
+                'log-interval':10,
+                #'no-cuda':False,
+                'nprocs':1,
+                'loss':'cross_entropy',
+                #'loss':'nll_loss',
+                'optimizer':'SGD',
+                'validation': True,
+                'debug': True
+            }
+            '''            
+            
+            metadata['hyperparameters'] = {}
+            metadata['otherparameters'] = {}
+            metadata['others'] = {}
+
+            for key, value in self.script_params.items():
+                if key =="problem-type" or key =="nprocs" or key =="debug":
+                    metadata['information'][key] = value
+                elif key =="net-name" or key =="validation":
+                    metadata['information'][key] = value
+                elif key == "no-cuda":                
+                    if value == True: # use cpu
+                        metadata['information']['proc_type'] = "CPU"
+                elif key == "epochs" or key == "batch-size" or key =="test-batch-size" or key == "seed" or \
+                    key == "lr" or key == "momentum" or key == "loss" or key == "optimizer":
+                    metadata['hyperparameters'][key] = value
+                elif key =="log-interval":
+                    metadata['otherparameters'][key] = value
+                else:
+                    metadata['others'][key] = value
+                    
+        elif job_type == 2:            
+            metadata['parameters'] = {}            
+            for key, value in self.script_params.items():
+                if key =="problem-type" or key =="nprocs" or key =="debug":
+                    metadata['information'][key] = value
+                elif key == "no-cuda":
+                    if value == True: # use cpu
+                        metadata['information']['proc_type'] = "CPU"
+                else:
+                    metadata['otherparameters'][key] = value
+    
 
         with open(self.this_job_path + "/meta-job.json", "w") as json_file:
             json.dump(metadata, json_file)
@@ -340,9 +388,20 @@ fi
             train_script_path = self.this_job_path + '/train.py'
             shutil.copy(org_train_script_path, train_script_path)
     
-    def fit(self,input_data=None,input_labels=None):
+    def set_job_title(self,job_title=""):
+        ##### Set Job Title #####
+        if job_title != "":
+            job_title = job_title.replace(" ","_") # Replace spaces with hyphens
+            self.job_title = job_title
+        else:
+            self.job_title = ""
+        
+    
+    def fit(self,job_title="",input_data=None,input_labels=None):
         # make arguments list to one string
-        argstr = ' '.join(self.args)        
+        argstr = ' '.join(self.args)
+        ##### Set Job Title #####
+        self.set_job_title(job_title)
         ##### Make dir for new job #####
         self.make_job_path()
         ##### Make Net Class File and DatasetLoader Class File #####
@@ -357,6 +416,7 @@ fi
             shell_script=self.make_shell_script(argstr)
             if shell_script == "ERROR":
                 # Failed to Predict
+                self._request_update_status("FAILED")
                 return
             shfile.write(shell_script)
         # Set permission to run the script
@@ -610,9 +670,11 @@ fi
             print("Training has not been completed.")
             return None
     
-    def submit(self,script_path):
+    def submit(self,script_path,job_title=""):
         # make arguments list to one string
-        argstr = ' '.join(self.args)        
+        argstr = ' '.join(self.args)
+        ##### Set Job Title #####
+        self.set_job_title(job_title)
         ##### Make dir for new job #####
         self.make_job_path()
         ##### request submit job (register job to database) - API Call #####
@@ -633,7 +695,7 @@ fi
         # Set permission to run the script
         os.chmod(self.job_script, 0o777)
         ##### Write Meta Data JSON File #####
-#         self.write_metadata()
+        self.write_metadata(2) # type 2
         # Request Job Submission
         self.training = self._request_to_portal()
     
@@ -672,7 +734,8 @@ fi
                 idstr = idstr.strip()
                 print("Batch job ID-{} is running on the HPC.".format(idstr))
                 self.slurm_job_id = int(idstr)
-                self._request_update_status("RUNNING")
+                # Moved to the job.sh
+#                 self._request_update_status("RUNNING")
                 self.trained = True
         except:
             print("The requested training job has failed.")
@@ -710,6 +773,7 @@ fi
                 print('--------------------------------')
                 print('Job ID: {}'.format(resjson['deJobId']))
                 print('Job Title: {}'.format(resjson['title']))
+                print('Job Directory: {}'.format(self.this_job_path))                
                 print('Start Date: {}'.format(resjson['startDt']))
                 print('End Date: {}'.format(resjson['endDt']))
                 print('--------------------------------')

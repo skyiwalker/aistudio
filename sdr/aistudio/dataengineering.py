@@ -148,12 +148,14 @@ class DataEngineering:
     def make_job_path(self):
         timenow = datetime.now().strftime('%Y%m%d%H%M%S')
         self.job_num = timenow
-        self.job_title = 'job-' + timenow
-        self.this_job_path = self.job_path + '/' + self.job_title        
+        self.job_location = 'de-' + timenow
+        if self.job_title == "":
+            self.job_title = self.job_location
+        self.this_job_path = self.job_path + '/' + self.job_location        
         self.job_script = self.this_job_path + '/job.sh'
         self.job_list = self.this_job_path + '/job.list'
         self.batch_info = self.this_job_path + '/batch.info'
-        self.output_path = self.real_output_path + '/' +  self.job_title
+        self.output_path = self.real_output_path + '/' +  self.job_location
 #         if not os.path.isdir(self.this_job_path):
 #             os.mkdir(self.this_job_path)
         createDirectory(self.this_job_path)
@@ -170,18 +172,27 @@ class DataEngineering:
         #calculate max procs
         max_procs_cpu = num_cores_cpu * max_nodes
 #         max_procs_gpu = num_cores_gpu * max_nodes
+
+        ntasks_per_node = num_cores_cpu
         
         if self.nprocs > max_procs_cpu: # use cpu
-            print("The maximum number of cores has been exceeded.")
+            print("The maximum number of cores(CPU) has been exceeded.")
             return "ERROR"          
 #         if self.nprocs > max_procs_gpu: # use gpu
 #             print("The maximum number of cores has been exceeded.")
 #             return "ERROR"
         
-        # calculate ntasks and nnodes
+        # set ntasks per node
         ntasks = self.nprocs
-        nnodes = min(max_nodes,ntasks)
-        ntasks_per_node = math.ceil(ntasks/nnodes)
+        if ntasks == 1:
+            ntasks_per_node = 1        
+        elif ntasks <= 0:
+            print("A problem was found with the parallel parameters.")
+            return "ERROR"
+        
+        # calculate and nnodes        
+        nnodes = math.ceil(ntasks/ntasks_per_node)
+        self.nnodes = nnodes
         
         shell_script='''\
 #!/bin/bash
@@ -300,15 +311,27 @@ remote.curate.allowed:false
         metadata = {}
         metadata['parameters'] = {}
         
+        # default processor type
+        metadata['parameters']['proc_type'] = "CPU"
+                
+        # additional meta data
+        metadata['parameters']['nnodes'] = self.nnodes
+        
         for key, value in self.script_params.items():
-                metadata['parameters'][key] = value
+            metadata['parameters'][key] = value
 
         with open(self.this_job_path + "/meta-job.json", "w") as json_file:
             json.dump(metadata, json_file)
         
-    def submit(self):
+    def submit(self,job_title=""):
         # make arguments list to one string
-        argstr = ' '.join(self.args)        
+        argstr = ' '.join(self.args)
+        ##### Set Job Title #####
+        if job_title != "":
+            job_title = job_title.replace(" ","_") # Replace spaces with hyphens
+            self.job_title = job_title
+        else:
+            self.job_title = ""
         ##### Make dir for new job #####
         self.make_job_path()
         ##### Make Classes File #####
@@ -324,6 +347,7 @@ remote.curate.allowed:false
             shell_script=self.make_shell_script(argstr)
             if shell_script == "ERROR":
                 # Failed to Predict
+                self._request_update_status("FAILED")
                 return
             shfile.write(shell_script)
         # Set permission to run the script
@@ -446,6 +470,7 @@ remote.curate.allowed:false
                 print('--------------------------------')
                 print('Job ID: {}'.format(resjson['deJobId']))
                 print('Job Title: {}'.format(resjson['title']))
+                print('Job Directory: {}'.format(self.this_job_path))
                 print('Start Date: {}'.format(resjson['startDt']))
                 print('End Date: {}'.format(resjson['endDt']))
                 print('--------------------------------')

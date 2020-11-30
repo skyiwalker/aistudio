@@ -213,7 +213,7 @@ def calculate_score(problem_type, target, preds):
     elif problem_type == 'regression':
         with open(_JOB_PATH + '/score', 'w') as f:
             score = metrics.r2_score(target,preds)
-            f.write('r1: {}'.format(score))
+            f.write('r2: {}'.format(score))
     return score
                 
 def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
@@ -507,12 +507,10 @@ if __name__ == '__main__':
             print("Optimizer's state_dict:")
             for var_name in optimizer.state_dict():
                 print(var_name, "\t", optimizer.state_dict()[var_name])
-
                 
     # Initialize Summary Writer
 #     writer_train = SummaryWriter("runs/train")
 #     writer_valid = SummaryWriter("runs/valid")
- 
     num_epochs = args.epochs
     # prediction phase need only 1 epoch
     if prediction:
@@ -542,70 +540,72 @@ if __name__ == '__main__':
                 shutil.copy(netfile, PATH)
                     
     # Evaluation for entire dataset
-    if evaluation:        
-        if prediction:
-            eval_loader = torch.utils.data.DataLoader(test_dataset, batch_size=10000)
-            preds = get_all_preds(model, eval_loader)
-            if cuda:
-                preds = preds.cpu()
-            if type(test_dataset) == torch.utils.data.dataset.TensorDataset:
-                if args.debug:
-                    print("Format of the dataset is TensorDataset!")
-                targets = test_dataset[:][1]
-                classes = test_dataset[:][1].unique().numpy()
-            elif type(test_dataset) == torchvision.datasets.mnist.MNIST or \
-                type(test_dataset) == torchvision.datasets.mnist.FashionMNIST or \
-                type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
-                if args.debug:
-                    print("Format of the dataset is torchvision dataset!")
-                targets = test_dataset.targets
-                classes = test_dataset.classes
-            if problem_type == 'classification':
-                cm = confusion_matrix(targets, preds.argmax(dim=1))
-                # plot confusion matrix
-                plot_confusion_matrix(cm, classes)
-                # calculate score
-                score = calculate_score('classification',targets,preds.argmax(dim=1))
-            elif problem_type == 'regression':
-                vsplot, ax = plt.subplots(1, 1, figsize=(12,12))
-                ax.scatter(x = preds, y = test_dataset.targets, color='c', edgecolors=(0, 0, 0))
-                ax.plot([targets.min(), targets.max()], [targets.min(), targets.max()], 'k--', lw=4)
-                ax.set_xlabel('Predicted')
-                ax.set_ylabel('Actual')
-                plt.show()
-                plt.savefig(_JOB_PATH + '/regressionAccuracy.png')
-                # calculate score
-                score = calculate_score('regression',targets,preds)
-            # generate service.json
-            generate_service_config(problem_type,score)
-        else:
-            eval_loader = torch.utils.data.DataLoader(train_dataset, batch_size=10000)
-            train_preds = get_all_preds(model, eval_loader)
-            if cuda:
-                train_preds = train_preds.cpu()
-            if type(train_dataset) == torch.utils.data.dataset.TensorDataset:
-                targets = train_dataset[:][1]
-                classes = train_dataset[:][1].unique().numpy()
-            elif type(train_dataset) == torchvision.datasets.mnist.MNIST or \
-                type(train_dataset) == torchvision.datasets.mnist.FashionMNIST or \
-                type(train_dataset) == torchvision.datasets.cifar.CIFAR10:
-                targets = train_dataset.targets
-                classes = train_dataset.classes
-            if problem_type == 'classification':
-                cm = confusion_matrix(targets, train_preds.argmax(dim=1))
-                # plot confusion matrix
-                plot_confusion_matrix(cm, classes)
-                # calculate score
-                score = calculate_score('classification',targets,train_preds.argmax(dim=1))
-            elif problem_type == 'regression':
-                vsplot, ax = plt.subplots(1, 1, figsize=(12,12))
-                ax.scatter(x = train_preds, y = targets, color='c', edgecolors=(0, 0, 0))
-                ax.plot([targets.min(), targets.max()], [targets.min(), targets.max()], 'k--', lw=4)
-                ax.set_xlabel('Predicted')
-                ax.set_ylabel('Actual')
-                plt.show()
-                plt.savefig(_JOB_PATH + '/regressionAccuracy.png')
-                # calculate score
-                score = calculate_score('regression',targets,train_preds)
-            # generate service.json
-            generate_service_config(problem_type,score)
+    # only rank 0 does this
+    if hvd.rank() == 0:
+        if evaluation:        
+            if prediction:
+                eval_loader = torch.utils.data.DataLoader(test_dataset, batch_size=10000)
+                preds = get_all_preds(model, eval_loader)
+                if cuda:
+                    preds = preds.cpu()
+                if type(test_dataset) == torch.utils.data.dataset.TensorDataset:
+                    if args.debug:
+                        print("Format of the dataset is TensorDataset!")
+                    targets = test_dataset[:][1]
+                    classes = test_dataset[:][1].unique().numpy()
+                elif type(test_dataset) == torchvision.datasets.mnist.MNIST or \
+                    type(test_dataset) == torchvision.datasets.mnist.FashionMNIST or \
+                    type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
+                    if args.debug:
+                        print("Format of the dataset is torchvision dataset!")
+                    targets = test_dataset.targets
+                    classes = test_dataset.classes
+                if problem_type == 'classification':
+                    cm = confusion_matrix(targets, preds.argmax(dim=1))
+                    # plot confusion matrix
+                    plot_confusion_matrix(cm, classes,normalize=False) # If you want to normalize the matrix, change it True
+                    # calculate score
+                    score = calculate_score('classification',targets,preds.argmax(dim=1))
+                elif problem_type == 'regression':
+                    vsplot, ax = plt.subplots(1, 1, figsize=(12,12))
+                    ax.scatter(x = preds, y = test_dataset.targets, color='c', edgecolors=(0, 0, 0))
+                    ax.plot([targets.min(), targets.max()], [targets.min(), targets.max()], 'k--', lw=4)
+                    ax.set_xlabel('Predicted')
+                    ax.set_ylabel('Actual')
+                    plt.show()
+                    plt.savefig(_JOB_PATH + '/regressionAccuracy.png')
+                    # calculate score
+                    score = calculate_score('regression',targets,preds)
+                # generate service.json
+                generate_service_config(problem_type,score)
+            else:
+                eval_loader = torch.utils.data.DataLoader(train_dataset, batch_size=10000)
+                train_preds = get_all_preds(model, eval_loader)
+                if cuda:
+                    train_preds = train_preds.cpu()
+                if type(train_dataset) == torch.utils.data.dataset.TensorDataset:
+                    targets = train_dataset[:][1]
+                    classes = train_dataset[:][1].unique().numpy()
+                elif type(train_dataset) == torchvision.datasets.mnist.MNIST or \
+                    type(train_dataset) == torchvision.datasets.mnist.FashionMNIST or \
+                    type(train_dataset) == torchvision.datasets.cifar.CIFAR10:
+                    targets = train_dataset.targets
+                    classes = train_dataset.classes
+                if problem_type == 'classification':
+                    cm = confusion_matrix(targets, train_preds.argmax(dim=1))
+                    # plot confusion matrix
+                    plot_confusion_matrix(cm, classes,normalize=False) # If you want to normalize the matrix, change it True
+                    # calculate score
+                    score = calculate_score('classification',targets,train_preds.argmax(dim=1))
+                elif problem_type == 'regression':
+                    vsplot, ax = plt.subplots(1, 1, figsize=(12,12))
+                    ax.scatter(x = train_preds, y = targets, color='c', edgecolors=(0, 0, 0))
+                    ax.plot([targets.min(), targets.max()], [targets.min(), targets.max()], 'k--', lw=4)
+                    ax.set_xlabel('Predicted')
+                    ax.set_ylabel('Actual')
+                    plt.show()
+                    plt.savefig(_JOB_PATH + '/regressionAccuracy.png')
+                    # calculate score
+                    score = calculate_score('regression',targets,train_preds)
+                # generate service.json
+                generate_service_config(problem_type,score)
