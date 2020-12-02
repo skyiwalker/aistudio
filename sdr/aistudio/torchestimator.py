@@ -213,7 +213,7 @@ class TorchEstimator:
             with open(self.this_job_path + '/netdataloader.py',"w") as f:
                 f.write(astunparse.unparse(self.class_object))
             # Network only
-            with open(self.this_job_path + '/torchmodel.py',"w") as f:
+            with open(self.this_job_path + '/net.py',"w") as f:
                 f.write(astunparse.unparse(self.net_object))
 
     def make_job_path(self):
