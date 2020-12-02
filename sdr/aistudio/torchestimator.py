@@ -55,6 +55,11 @@ def createDirectory(dir):
 class TorchEstimator:
     def __init__(self,model_name="",net_name="",script_params={}):
         self.apiurl = 'https://sdr.edison.re.kr:8443'
+        self.netdataloader_name = 'netdataloader'
+        self.netdataloader_filename = self.netdataloader_name + '.py'
+        self.network_filename = 'net.py'
+        self.torchnet_filename = 'torchmodel.py'
+        self.torchmodel_filename = 'torchmodel.pth'
         self.model_name = model_name
         self.net_name = net_name
         self.script_params = script_params
@@ -210,10 +215,10 @@ class TorchEstimator:
     def make_classes(self):
         if self.has_job:
             # Network and Dataloader
-            with open(self.this_job_path + '/netdataloader.py',"w") as f:
+            with open(self.this_job_path + '/' + self.netdataloader_filename,"w") as f:
                 f.write(astunparse.unparse(self.class_object))
             # Network only
-            with open(self.this_job_path + '/net.py',"w") as f:
+            with open(self.this_job_path + '/' + self.network_filename,"w") as f:
                 f.write(astunparse.unparse(self.net_object))
 
     def make_job_path(self):
@@ -433,7 +438,7 @@ fi
         
     def register_model(self, model_name):
         if not self.trained:
-            if os.isfile(self.this_job_path + '/torchmodel.pth'):
+            if os.isfile(self.this_job_path + '/' + self.torchmodel_filename):
                 self.trained=True
         # add model information to database(file db or web db)
         if self.trained:
@@ -446,16 +451,16 @@ fi
                 # copy network file to model path
                 # $WORKSPACE/nets{net_name} -> $WORKSPACE/model/{model_name}/torchmodel.py
                 org_net_path = self.workspace_path + '/net/' + self.net_name + '.py'
-                net_path = model_path + '/torchmodel.py'
+                net_path = model_path + '/' + self.torchnet_filename
                 shutil.copy(org_net_path, net_path)
             else:
-                org_net_path = self.this_job_path + '/torchmodel.py'
-                net_path = model_path + '/torchmodel.py'
+                org_net_path = self.this_job_path + '/' + self.network_filename
+                net_path = model_path + '/' + self.torchnet_filename
                 shutil.copy(org_net_path, net_path)
             # copy model file to model path
             # $JOB_PATH/torchmodel.pth -> $WORKSPACE/model/{model_name}/torchmodel.pth
-            org_modelfile_path = self.this_job_path + '/torchmodel.pth'
-            modelfile_path = model_path + '/torchmodel.pth'
+            org_modelfile_path = self.this_job_path + '/' + self.torchmodel_filename
+            modelfile_path = model_path + '/' + self.torchmodel_filename
             shutil.copy(org_modelfile_path, modelfile_path)
             # copy service.json to model path            
             org_service_file_path = self.this_job_path + '/service.json'
@@ -644,7 +649,7 @@ fi
         
     def get_model(self):
         if not self.trained:
-            if os.isfile(self.this_job_path + '/torchmodel.pth'):
+            if os.isfile(self.this_job_path + '/' + self.torchmodel_filename):
                 self.trained=True
         # Load Network
         if self.trained:
@@ -663,14 +668,14 @@ fi
             else:                      
                 sys.path.append(self.this_job_path)
                 import importlib
-                netdataloader = importlib.import_module('netdataloader')
+                netdataloader = importlib.import_module(self.netdataloader_name)
                 model = netdataloader.Net()
             # Load weights of the model from .pth file
             if torch.cuda.is_available():
-                model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth"))
+                model.load_state_dict(torch.load(self.this_job_path + '/' + self.torchmodel_filename))
             else:
                 device = torch.device('cpu')
-                model.load_state_dict(torch.load(self.this_job_path+"/torchmodel.pth",map_location=device))
+                model.load_state_dict(torch.load(self.this_job_path + '/' + self.torchmodel_filename,map_location=device))
             return model
         else:
             print("Training has not been completed.")
