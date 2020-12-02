@@ -597,16 +597,21 @@ fi
             print("Even one epoch has not been completed.\nPlease execute the command again after a while.")        
                         
         
-    def predict(self, dataset_loader=""):
+    def predict(self,job_title="",dataset_loader=""):
         argstr = ' '.join(self.args)
         argstr = argstr + ' --prediction'
         if self.has_job==False:
+            ##### Set Job Title #####
+            self.set_job_title(job_title)
             ##### Make dir for new job #####
             self.make_job_path()
             ##### Make Net Class File and DatasetLoader Class File #####
             self.make_classes()
             # copy train.py to job path
             self.copy_train_script()
+        else:
+            if job_title!="":
+                print("Warning: Prediction will be performed within the already trained task. The entered job title is ignored.")
         ##### request submit job (register job to database) - API Call #####
         self._request_submit_job()
         # FOR LOCAL TEST
