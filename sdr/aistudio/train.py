@@ -343,10 +343,10 @@ if __name__ == '__main__':
         test_dataset = dataset_loader.get_test_dataset()
         if problem_type == 'classification':
             if type(test_dataset) == torch.utils.data.dataset.TensorDataset:
-                num_category = test_dataset[:][1].max()
+                num_category = test_dataset[:][1].max() + 1
             elif type(test_dataset) == torchvision.datasets.mnist.MNIST or \
                 type(test_dataset) == torchvision.datasets.mnist.FashionMNIST:                
-                num_category = test_dataset.targets.max().item()
+                num_category = test_dataset.targets.max().item() + 1
             elif type(test_dataset) == torchvision.datasets.cifar.CIFAR10:
                 num_category = max(train_dataset.targets) + 1
             

@@ -137,6 +137,7 @@ class TorchEstimator:
         createDirectory(JOB_PATH)
         self.job_path = JOB_PATH
         self.has_job = False
+        self.job_title = ""
         # 5 is after 'home/'        
         self.real_output_path = EDISON_SCIDATA_PATH + JOB_PATH[5:]
         self.real_workspace_path = EDISON_SCIDATA_PATH + WORKSPACE_PATH[5:]
@@ -173,11 +174,11 @@ class TorchEstimator:
             ast_pyfile = ast.parse(f.read())
             for node in ast_pyfile.body[:]:
                 if type(node) == ast.ClassDef:
-                    if node.name == 'Net':
+                    if node.name == 'Net' and has_net==False:
                         print("A neural network definition has been found.")
                         has_net = True
                         self.net_object.append(node)
-                    elif node.name == 'DatasetLoader':
+                    elif node.name == 'DatasetLoader' and has_dloader==False:
                         print("A dataset loader definition has been found.")
                         has_dloader = True
                     else:
