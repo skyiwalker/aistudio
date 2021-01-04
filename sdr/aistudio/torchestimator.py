@@ -436,10 +436,34 @@ fi
         # Request Job Submission
         self.training = self._request_to_portal()
         
+    def create_model_metadata(self,model_name,model_path,score):
+        metadata = {}
+        emptylist = []
+        metadata['modelName'] = model_name
+        metadata['jobFrom'] = 'AI Studio API'
+        metadata['framework'] = 'PyTorch'
+        metadata['parentJob'] = self.job_id
+        metadata['studyName'] = ""
+        metadata['inputs'] = emptylist
+        metadata['trialNumber'] = -1
+        metadata['accuracy'] = float(score)
+        metadata['jobType'] = 81
+        timenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        metadata['createDate'] = timenow
+        org_model_metadata_path = self.this_job_path + '/modelmeta.json'
+        with open(org_model_metadata_path, "w") as json_file:
+            json.dump(metadata, json_file)
+        model_metadata_path = model_path + '/modelmeta.json'
+        if os.path.exists(org_model_metadata_path):
+            shutil.copy(org_model_metadata_path, model_metadata_path)
+        
     def register_model(self, model_name):
         if not self.trained:
             if os.isfile(self.this_job_path + '/' + self.torchmodel_filename):
                 self.trained=True
+            else:
+                print("Error: No model trained.")
+                return
         # add model information to database(file db or web db)
         if self.trained:
             # create model folder        
@@ -478,9 +502,14 @@ fi
                 shutil.copy(org_graph_file_path, graph_file_path)
             # copy score to model path
             org_score_path = self.this_job_path + '/score'
+            with open(org_score_path,"r") as score_file:
+                score = score_file.readline()
+                pos = score.find(':')
+                score = score[pos+2:]
             score_path = model_path + '/score'
             if os.path.exists(org_score_path):
                 shutil.copy(org_score_path, score_path)
+            self.create_model_metadata(model_name,model_path,score)
             
     
 #     def extract_network(self):
